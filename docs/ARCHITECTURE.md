@@ -20,12 +20,12 @@ data/*.json -> Core module -> selection -> ordered plan -> review
 
 | Component | Responsibility |
 | --- | --- |
-| `WinUtility.ps1` | Import modules, load catalogs, create the session, start the menu. |
+| `WinUtility.ps1` | Import modules, handle startup elevation, load catalogs, create the session, start the menu. |
 | `bootstrap.ps1` | Resolve GitHub `main`, download/extract one archive with bounded retries and a direct download fallback, launch in a child PowerShell process, clean temporary files. |
 | `src/WinUtility.Terminal.psm1` | Menus, item toggles, previews, confirmations, and displaying results. |
 | `src/WinUtility.Input.psm1` | Console key input, focused selection display, text editing, and cursor restoration. |
 | `src/WinUtility.Core.psm1` | Catalog validation, session state, selection changes, planning, JSON persistence. |
-| `src/WinUtility.Windows.psm1` | Readiness probes, current-state review, WinGet calls, Explorer handlers, durable history and undo. |
+| `src/WinUtility.Windows.psm1` | Startup elevation, readiness probes, current-state review, WinGet calls, Explorer handlers, durable history and undo. |
 | `src/WinUtility.AppWorker.ps1` | Internal entry point for installing an app in the same user's non-administrator session. |
 | `src/WinUtility.Repair.psm1` | Code-owned repair plans, administrator checks, native command execution, repair reports, and dedicated elevation. |
 | `data/` | Setting, app, and preset catalogs. |
@@ -36,6 +36,16 @@ selection and review do not execute Windows actions. Real apply has a separate
 UI confirmation, and the execution adapter independently checks Windows/user
 identity before creating history or making changes. The bootstrap's child-process
 execution policy does not change persistent PowerShell execution policies.
+
+`Initialize-WuStartup` requests elevation once on verified Windows 11 hosts unless
+`-Preview` is set or the process is already elevated. It uses the current PowerShell
+edition, passes the entry path literally and preserves `-Plain`, `-Repair`, and
+`-NoKeyNavigation`. The child verifies its expected SID, session ID and administrator
+token before opening the menu. A credential switch or missing elevation fails
+without another relaunch. `Start-Process -Verb RunAs -PassThru` followed by the
+child's `WaitForExit()` keeps the checkout alive until the menu closes. It waits
+for that process rather than all its descendants, so installed apps can stay open.
+Cancellation stops startup with instructions; Linux and preview remain unelevated.
 
 The bootstrap retries temporary HTTP 408/500/502/503/504 responses and transport
 failures up to three times per stage, waiting two then four seconds. Metadata
@@ -89,9 +99,10 @@ and batches, and restores the cursor after input. Windows uses console cursor
 coordinates; Unix uses relative cursor movement without a position query.
 Confirmation calls explicitly default to Cancel. `-NoKeyNavigation` disables
 key input, as do redirected streams, unsupported hosts, and very small consoles.
-Console failures fall back to typed input. A cyan/green
-palette, framed headings, selection indicators, and category sections share the
-same renderer. Text wraps to the available width; the home menu omits descriptions
+Console failures fall back to typed input. The focused row uses black text on a
+yellow background; cyan headings and green checked items remain distinct. Framed
+headings, selection indicators, and category sections share the same renderer.
+Text wraps to the available width; the home menu omits descriptions
 in windows shorter than 38 rows. UTF-8 consoles get rounded borders, created from
 character codes to keep the PowerShell source compatible with 5.1 encodings.
 
@@ -186,8 +197,7 @@ with `--version`, without automatically installing or repairing it. Missing
 registry/power information remains unknown rather than being reported healthy.
 
 `Get-WuExecutionReview -Plan -Environment` reads implemented setting state and
-queries each exact WinGet package ID in normal sessions. Elevated sessions defer
-app checks to the normal-user worker during apply. It returns `Id`, `Name`, `Capability`,
+queries each exact WinGet package ID in the current session. It returns `Id`, `Name`, `Capability`,
 `Current`, `Status`, and `Message`; `NotImplemented` items have no executable handler
 and are skipped without changes.
 Review queries do not auto-accept source terms. Fresh-source agreement failures
@@ -204,18 +214,30 @@ App queries use exit codes rather than parsing localized tables: 0 means install
 remains unknown. Apply fails an unknown query instead of assuming absence. Installs
 use `--no-upgrade`, `--silent`, `--disable-interactivity`, and the two agreement
 flags; no `--force`, security-check bypass, or `--allow-reboot` is added. The native
-adapter captures stdout/stderr and the signed exit code while restoring the
-caller's automatic exit-code variable. Interactive installer/UAC behavior can
-still depend on the selected installer.
+adapter starts a native process per command and reads stdout/stderr concurrently
+as UTF-8 chunks. It preserves carriage returns, backspaces and incomplete lines,
+streams output using `Write-Host -NoNewline`, and retains it in history. The signed
+exit code comes from the process without modifying `LASTEXITCODE`. An elapsed-time
+indicator remains visible during quiet operations. Version probes time out after
+30 seconds; other read-only queries after 120 seconds. Install processes have no
+query timeout. The adapter drains and waits for an active installer even if output
+display fails, retaining the operation lock. After WinGet exits, remaining output
+is drained until EOF, one second of silence, or five seconds total. An app that
+inherits its output pipe therefore cannot hold the install queue open indefinitely.
+Installer-specific prompts can remain.
 
-App installation always starts without administrator privileges. From an elevated
-menu, the adapter registers a temporary, on-demand Task Scheduler task with the
-current user's SID, `TASK_LOGON_INTERACTIVE_TOKEN`, and `TASK_RUNLEVEL_LUA`.
+App installation uses the current elevated session by default. Only WinGet's
+`INSTALLER_PROHIBITS_ELEVATION` (-1978335146) and `ADMIN_CONTEXT_ACTION_PROHIBITED`
+(-1978335107) results trigger one retry with normal-user permissions. Both the
+initial refusal and retry output are saved; the final result reflects the retry.
+Other failures never trigger this fallback. See [WinGet return codes](https://github.com/microsoft/winget-cli/blob/master/doc/windows/package-manager/winget/returnCodes.md).
+
+For that fallback the adapter registers a temporary, on-demand Task Scheduler
+task with the current user's SID, `TASK_LOGON_INTERACTIVE_TOKEN`, and `TASK_RUNLEVEL_LUA`.
 There are no triggers or stored passwords. The worker verifies its actual SID,
 session ID and non-administrator token, discovers WinGet in that context, then
 checks for an existing installation before installing. This handles packages
-that prohibit elevation without a hardcoded app list or a misleading `--scope user`
-workaround. Installers that need elevation can still request UAC approval.
+that prohibit elevation without a hardcoded app list or a `--scope user` override.
 [Microsoft: task security contexts](https://learn.microsoft.com/en-us/windows/win32/taskschd/security-contexts-for-running-tasks).
 
 The parent saves the Pending action before starting the worker. Requests contain

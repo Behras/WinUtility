@@ -46,12 +46,12 @@ function Write-WuKeyFrame {
     # Unix terminals need no cursor-position query: every redraw ends below this block.
     if ($relativeCursor) { [Console]::Write("${escape}[${rows}A`r") }
     for ($row = 0; $row -lt $rows; $row++) {
-        $line = ''; $color = 'DarkGray'
+        $line = ''; $color = 'DarkGray'; $background = $null
         if ($row -lt $visible) {
             $item = $Items[$first + $row]
             $marker = '  '; $color = 'Gray'
             if ($item.PSObject.Properties.Name -contains 'Color') { $color = $item.Color }
-            if (($first + $row) -eq $Index) { $marker = '> '; $color = 'Cyan' }
+            if (($first + $row) -eq $Index) { $marker = '> '; $color = 'Black'; $background = 'Yellow' }
             $line = '{0}[{1}] {2}' -f $marker, $item.Key, $item.Label
         }
         elseif ($row -eq $visible) {
@@ -78,7 +78,10 @@ function Write-WuKeyFrame {
         }
         if (-not $relativeCursor) { [Console]::SetCursorPosition(0, $State.Top + $row) }
         $arguments = @{ Object = (Limit-WuInputText $line $width).PadRight($width); NoNewline = $true }
-        if (-not $Plain) { $arguments.ForegroundColor = $color }
+        if (-not $Plain) {
+            $arguments.ForegroundColor = $color
+            if ($null -ne $background) { $arguments.BackgroundColor = $background }
+        }
         Write-Host @arguments
         if ($relativeCursor) { [Console]::Write("`r`n") }
     }

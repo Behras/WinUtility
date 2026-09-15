@@ -75,6 +75,19 @@ lists need their own explicit scope; they are not part of these laptop presets.
 
 ## Source and implementation provenance
 
+### Install execution
+
+WinUtility follows WinUtil's startup elevation and sequential native-process
+pattern, inspected at commit `2260df6365b3ec8b86a42876e8a04640ba1f0e30`:
+[startup](https://github.com/ChrisTitusTech/winutil/blob/2260df6365b3ec8b86a42876e8a04640ba1f0e30/scripts/start.ps1),
+[WinGet installer](https://github.com/ChrisTitusTech/winutil/blob/2260df6365b3ec8b86a42876e8a04640ba1f0e30/functions/private/Install-WinUtilProgramWinget.ps1),
+and [install queue](https://github.com/ChrisTitusTech/winutil/blob/2260df6365b3ec8b86a42876e8a04640ba1f0e30/functions/public/Invoke-WPFInstall.ps1).
+WinUtil waits on native install processes and records per-package outcomes.
+WinUtility implements this in its terminal adapter with concurrent raw output
+capture for history, elapsed-time progress, and an explicit normal-user fallback
+for packages that prohibit elevation. This adapts the architecture; it does not
+copy WinUtil's GUI/runspace layer or bypass installer permission requirements.
+
 This review collects capabilities and interaction ideas. The terminal rendering
 code in WinUtility was written for this project; reference source code and assets
 were not copied into it.

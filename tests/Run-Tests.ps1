@@ -55,6 +55,7 @@ try {
     . (Join-Path $PSScriptRoot 'Input.Tests.ps1')
     . (Join-Path $PSScriptRoot 'Terminal.Tests.ps1')
     . (Join-Path $PSScriptRoot 'Windows.Tests.ps1')
+    . (Join-Path $PSScriptRoot 'Startup.Tests.ps1')
     . (Join-Path $PSScriptRoot 'AppWorker.Tests.ps1')
     . (Join-Path $PSScriptRoot 'Repair.Tests.ps1')
     . (Join-Path $PSScriptRoot 'Bootstrap.Tests.ps1')

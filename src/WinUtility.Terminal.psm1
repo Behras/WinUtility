@@ -599,12 +599,12 @@ function Show-WuApply {
     $hasApps = @($Plan | Where-Object { $_.Kind -eq 'App' }).Count -gt 0
     Write-WuText -Text 'Explorer values are backed up for undo. App installs are not undone by WinUtility.' -Tone Muted
     if ($hasApps) {
-        Write-WuText -Text 'Apps install as this Windows user with normal permissions, including from an administrator menu.' -Tone Accent
-        Write-WuText -Text 'Continuing accepts the selected apps'' license terms and WinGet source agreements. Installers may request administrator access.' -Tone Warning
+        Write-WuText -Text 'Apps install one at a time. Apps that forbid administrator access retry with normal-user permissions.' -Tone Accent
+        Write-WuText -Text 'Continuing accepts the selected apps'' license terms and WinGet source agreements.' -Tone Warning
     }
     if (-not (Confirm-WuChoice 'Apply these supported changes to this Windows user and laptop?' 'Apply now')) { return }
     try {
-        $Session.LastRun = Invoke-WuApply -Plan $Plan -AcceptAppAgreements:$hasApps -OnProgress { param($Name) Write-WuText -Text "Working: $Name" -Tone Accent }
+        $Session.LastRun = Invoke-WuApply -Plan $Plan -AcceptAppAgreements:$hasApps -OnProgress { param($Name, $Index, $Total) Write-WuText -Text "[$Index/$Total] Working: $Name" -Tone Accent }
         Write-WuHeading 'Apply results'
         Write-WuResults -Results $Session.LastRun.Actions
         Write-WuText -Text "History: $($Session.LastRun.Path)" -Tone Muted

@@ -36,10 +36,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\WinUtility.ps1
 Keep the `src` and `data` folders alongside the entry script. After pulling an
 update, close and reopen WinUtility to load the new modules.
 
-App installs use normal-user permissions, including when the menu was opened as
-administrator. This supports installers such as Spotify that reject elevation.
-An installer can still request administrator approval when it needs it. Use the
-repair menu's separate administrator action for Windows repairs.
+On Windows 11, WinUtility requests administrator access once when it opens.
+Apps install one at a time in that session, with live output and elapsed time.
+Apps such as Spotify that forbid elevation retry as the same normal Windows user.
+Individual installers can still have their own prompts. Linux and `-Preview`
+do not request administrator access.
 
 ## Controls
 
@@ -58,6 +59,8 @@ and repairs ask for confirmation; confirmation screens start on **Cancel**.
 
 Key navigation is automatic in supported terminals. Use `-NoKeyNavigation` for
 numbered, line-by-line input, or `-Plain` for monochrome output.
+The active row has a yellow background and black text; headings stay cyan and
+checked items stay green when unfocused. A `>` marker also identifies focus.
 
 ## Features
 
@@ -81,15 +84,15 @@ The full workflow runs **CHKDSK scan → DISM repair → SFC repair → DISM sca
 verification**. Failures and required restarts stop subsequent steps. Reports show
 the command output and remain available for review.
 
-Use **Open repair menu as administrator** when needed. Boot-time disk checks and
-local Windows media are separate choices under **Advanced recovery tools**.
+Repairs use the administrator session opened at startup. Boot-time disk checks
+and local Windows media are separate choices under **Advanced recovery tools**.
 See the [repair guide](docs/REPAIR.md) for details and troubleshooting.
 
 ## Requirements
 
 - Windows 11 with Windows PowerShell 5.1 or PowerShell 7.
 - WinGet for app installation and live package search.
-- Administrator access for Windows repair tools; some app installers also request it.
+- Administrator access for normal Windows startup; `-Preview` supports browsing without it.
 
 PowerShell 7 on Linux can browse catalogs and save setups. Windows actions are
 unavailable there. No additional PowerShell UI modules are required.

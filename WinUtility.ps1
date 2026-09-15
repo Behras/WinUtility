@@ -1,16 +1,23 @@
 #requires -Version 5.1
 [CmdletBinding()]
-param([switch]$Plain, [switch]$Preview, [switch]$Repair, [switch]$NoKeyNavigation)
+param(
+    [switch]$Plain, [switch]$Preview, [switch]$Repair, [switch]$NoKeyNavigation,
+    [Parameter(DontShow)][string]$ExpectedUserSid,
+    [Parameter(DontShow)][int]$ExpectedSessionId
+)
 
 & {
     $ErrorActionPreference = 'Stop'
     try {
         # Import only for this invocation so the caller's shell stays unchanged.
+        Import-Module (Join-Path $PSScriptRoot 'src/WinUtility.Windows.psm1') -Force -Scope Local
         Import-Module (Join-Path $PSScriptRoot 'src/WinUtility.Core.psm1') -Force -Scope Local
         Import-Module (Join-Path $PSScriptRoot 'src/WinUtility.Terminal.psm1') -Force -Scope Local
+        $environment = Get-WuEnvironment
+        if (-not (Initialize-WuStartup -EntryPath $PSCommandPath -Environment $environment -Plain:$Plain -Preview:$Preview -Repair:$Repair -NoKeyNavigation:$NoKeyNavigation -ExpectedUserSid $ExpectedUserSid -ExpectedSessionId $ExpectedSessionId)) { return }
         $catalog = Get-WuCatalog -DataPath (Join-Path $PSScriptRoot 'data')
         $session = New-WuSession -Catalog $catalog
-        Start-WuTerminal -Session $session -Environment (Get-WuEnvironment) -Plain:$Plain -Preview:$Preview -Repair:$Repair -NoKeyNavigation:$NoKeyNavigation
+        Start-WuTerminal -Session $session -Environment $environment -Plain:$Plain -Preview:$Preview -Repair:$Repair -NoKeyNavigation:$NoKeyNavigation
     }
     catch {
         Write-Host ''

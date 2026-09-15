@@ -40,29 +40,107 @@ function Get-WuPendingReboot {
 }
 
 function Invoke-WuWinget {
-    param([string]$FilePath, [string[]]$Arguments, [switch]$Visible, [string]$OutputPath)
-    # Native stderr must not turn a WinGet exit code into a PowerShell 5.1 exception.
-    $ErrorActionPreference = 'Continue'
-    $PSNativeCommandUseErrorActionPreference = $false
-    # Native commands update the global automatic variable, even when called from a module.
-    # A local LASTEXITCODE would hide that update. Preserve the caller's value explicitly.
-    $previousExitCode = Get-Variable -Name LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue
-    $previousValue = $null
-    if ($null -ne $previousExitCode) { $previousValue = $previousExitCode.Value }
-    $global:LASTEXITCODE = $null
+    param([string]$FilePath, [string[]]$Arguments, [switch]$Visible, [string]$OutputPath,
+        [string]$Activity, [int]$TimeoutSeconds = 0)
+    $process = New-Object Diagnostics.Process
+    $writer = $null; $started = $false; $streams = @()
+    $output = New-Object Text.StringBuilder
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    $nextProgress = 0; $exitedAt = $null; $lastOutputAt = 0
     try {
-        $output = @(& $FilePath @Arguments 2>&1 | ForEach-Object {
-            $line = [string]$_
-            if ($OutputPath) { [IO.File]::AppendAllText($OutputPath, $line + "`n", (New-Object Text.UTF8Encoding($false))) }
-            if ($Visible) { Write-Host $line }
-            $line
-        })
-        if ($null -eq $global:LASTEXITCODE) { throw 'WinGet could not be started.' }
-        return [pscustomobject]@{ ExitCode = [int]$global:LASTEXITCODE; Output = $output -join "`n" }
+        if ($OutputPath) {
+            $writer = New-Object IO.StreamWriter($OutputPath, $true, (New-Object Text.UTF8Encoding($false)))
+            $writer.AutoFlush = $true
+        }
+        $process.StartInfo.FileName = $FilePath
+        # ArgumentList is unavailable in PowerShell 5.1. Quote for the native parser, without a shell.
+        $process.StartInfo.Arguments = (@(foreach ($argument in $Arguments) {
+            if (-not [string]::IsNullOrEmpty($argument) -and $argument -notmatch '[\s"]') { $argument }
+            else { '"' + [regex]::Replace([regex]::Replace([string]$argument, '(\\*)"', '$1$1\"'), '(\\+)$', '$1$1') + '"' }
+        }) -join ' ')
+        $process.StartInfo.UseShellExecute = $false
+        $process.StartInfo.RedirectStandardOutput = $true
+        $process.StartInfo.RedirectStandardError = $true
+        # WinGet's redirected output is UTF-8, independently of the legacy console code page.
+        $process.StartInfo.StandardOutputEncoding = [Text.Encoding]::UTF8
+        $process.StartInfo.StandardErrorEncoding = [Text.Encoding]::UTF8
+        $started = $process.Start()
+        if (-not $started) { throw 'WinGet could not be started.' }
+        $streams = @(
+            @{ Reader = $process.StandardOutput; Buffer = (New-Object char[] 2048); Task = $null; Closed = $false },
+            @{ Reader = $process.StandardError; Buffer = (New-Object char[] 2048); Task = $null; Closed = $false }
+        )
+        # Read both pipes concurrently, retaining carriage returns instead of turning spinner frames into lines.
+        while (-not $process.HasExited -or @($streams | Where-Object { -not $_.Closed }).Count -gt 0) {
+            if ($process.HasExited) {
+                if ($null -eq $exitedAt) { $exitedAt = $clock.Elapsed.TotalSeconds; $lastOutputAt = $exitedAt }
+                # An installer can launch an app that inherits a pipe. Drain WinGet's final output,
+                # then release that pipe instead of waiting for the newly installed app to close.
+                if (($clock.Elapsed.TotalSeconds - $lastOutputAt) -ge 1 -or ($clock.Elapsed.TotalSeconds - $exitedAt) -ge 5) { break }
+            }
+            if ($TimeoutSeconds -gt 0 -and $clock.Elapsed.TotalSeconds -ge $TimeoutSeconds -and -not $process.HasExited) {
+                $process.Kill()
+                throw "WinGet query timed out after $TimeoutSeconds seconds. Check connectivity and retry."
+            }
+            $progressed = $false
+            foreach ($stream in $streams) {
+                if ($stream.Closed) { continue }
+                if ($null -eq $stream.Task) { $stream.Task = $stream.Reader.ReadAsync($stream.Buffer, 0, $stream.Buffer.Length) }
+                if ($stream.Task.IsCompleted) {
+                    $count = $stream.Task.GetAwaiter().GetResult(); $stream.Task = $null
+                    if ($count -eq 0) { $stream.Closed = $true }
+                    else {
+                        $chunk = New-Object string($stream.Buffer, 0, $count)
+                        $lastOutputAt = $clock.Elapsed.TotalSeconds
+                        [void]$output.Append($chunk)
+                        if ($null -ne $writer) { $writer.Write($chunk) }
+                        if ($Visible) { Write-Host -Object $chunk -NoNewline }
+                    }
+                    $progressed = $true
+                }
+            }
+            if ($Activity -and $clock.Elapsed.TotalSeconds -ge $nextProgress) {
+                Write-Progress -Id 41 -Activity $Activity -Status ("Elapsed {0} | WinGet is running" -f $clock.Elapsed.ToString('hh\:mm\:ss'))
+                $nextProgress = $clock.Elapsed.TotalSeconds + 1
+            }
+            if (-not $progressed) { [Threading.Thread]::Sleep(40) }
+        }
+        $process.WaitForExit()
+        return [pscustomobject]@{ ExitCode = [int]$process.ExitCode; Output = $output.ToString() }
+    }
+    catch {
+        $_.Exception.Data['Output'] = $output.ToString()
+        throw
     }
     finally {
-        if ($null -eq $previousExitCode) { Remove-Variable -Name LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue }
-        else { $global:LASTEXITCODE = $previousValue }
+        # Keep the queue lock until an active installer finishes, even if display/logging fails.
+        # Drain its pipes while waiting, so a full output buffer cannot deadlock it.
+        if ($started -and -not $process.HasExited) {
+            while (@($streams | Where-Object { -not $_.Closed }).Count -gt 0) {
+                if ($process.HasExited) { break }
+                foreach ($stream in $streams) {
+                    if ($stream.Closed) { continue }
+                    try {
+                        if ($null -eq $stream.Task) { $stream.Task = $stream.Reader.ReadAsync($stream.Buffer, 0, $stream.Buffer.Length) }
+                        if ($stream.Task.IsCompleted) {
+                            $count = $stream.Task.GetAwaiter().GetResult(); $stream.Task = $null
+                            if ($count -eq 0) { $stream.Closed = $true }
+                            elseif ($null -ne $writer) {
+                                try { $writer.Write((New-Object string($stream.Buffer, 0, $count))) } catch { }
+                            }
+                        }
+                    }
+                    catch { $stream.Closed = $true }
+                }
+                [Threading.Thread]::Sleep(40)
+            }
+            $process.WaitForExit()
+        }
+        if ($null -ne $writer) { $writer.Dispose() }
+        foreach ($stream in $streams) { $stream.Reader.Dispose() }
+        $process.Dispose(); $clock.Stop()
+        if ($Activity) { Write-Progress -Id 41 -Activity $Activity -Completed }
+        if ($Visible) { Write-Host '' }
     }
 }
 
@@ -118,7 +196,7 @@ function Get-WuReadiness {
     if ($null -ne $command) {
         $report.WinGetPath = $command.Source
         try {
-            $probe = Invoke-WuWinget -FilePath $report.WinGetPath -Arguments @('--version')
+            $probe = Invoke-WuWinget -FilePath $report.WinGetPath -Arguments @('--version') -TimeoutSeconds 30
             if ($probe.ExitCode -ne 0) { throw "Exit code $($probe.ExitCode)" }
             $report.WinGetAvailable = $true
             $report.WinGetVersion = $probe.Output.Trim()
@@ -145,7 +223,7 @@ function Invoke-WuPackageLookup {
     if ($Operation -eq 'show') { $arguments = @('show', '--id', $Value, '--exact') }
     $arguments += @('--source', 'winget', '--disable-interactivity')
     if ($AcceptSourceAgreements) { $arguments += '--accept-source-agreements' }
-    $native = Invoke-WuWinget -FilePath $environment.WinGetPath -Arguments $arguments
+    $native = Invoke-WuWinget -FilePath $environment.WinGetPath -Arguments $arguments -Activity 'Searching WinGet' -TimeoutSeconds 120
     $status = 'Failed'
     if ($native.ExitCode -eq 0) { $status = 'Found' }
     elseif ($native.ExitCode -eq -1978335212) { $status = 'NotFound' }
@@ -220,10 +298,10 @@ function Write-WuExplorerValue {
 }
 
 function Get-WuInstalledApp {
-    param([string]$FilePath, [string]$PackageId, [switch]$AcceptAgreements, [string]$OutputPath)
+    param([string]$FilePath, [string]$PackageId, [switch]$AcceptAgreements, [string]$OutputPath, [string]$Activity)
     $arguments = @('list', '--id', $PackageId, '--exact', '--source', 'winget', '--disable-interactivity')
     if ($AcceptAgreements) { $arguments += '--accept-source-agreements' }
-    $probe = Invoke-WuWinget -FilePath $FilePath -Arguments $arguments -OutputPath $OutputPath
+    $probe = Invoke-WuWinget -FilePath $FilePath -Arguments $arguments -OutputPath $OutputPath -Activity $Activity -TimeoutSeconds 120
     $status = 'Unknown'
     if ($probe.ExitCode -eq 0) { $status = 'Installed' }
     elseif ($probe.ExitCode -eq -1978335212) { $status = 'NotInstalled' }
@@ -248,13 +326,8 @@ function Get-WuExecutionReview {
                     elseif ($before.Exists -and (($action.Id -eq 'explorer.extensions' -and $before.Value -eq 1) -or ($action.Id -eq 'explorer.hidden' -and $before.Value -eq 2))) { $row.Current = 'Hidden' }
                 }
                 elseif (-not $Environment.WinGetAvailable) { $row.Status = 'Blocked'; $row.Message = 'WinGet is unavailable. Install/update App Installer, then refresh readiness.' }
-                elseif ($Environment.IsAdmin) {
-                    $row.Status = 'Ready'
-                    $row.Current = 'Checked during apply'
-                    $row.Message = 'Check and install as this Windows user without administrator privileges. Installers can request elevation when needed.'
-                }
                 else {
-                    $probe = Get-WuInstalledApp $Environment.WinGetPath $action.PackageId
+                    $probe = Get-WuInstalledApp $Environment.WinGetPath $action.PackageId -Activity "Checking $($action.PackageId)"
                     $row.Current = $probe.Status
                     $row.Status = 'Ready'
                     $row.Message = 'Install only if missing; existing versions will not be upgraded.'
@@ -305,17 +378,66 @@ function Get-WuProcessSessionId {
     finally { $process.Dispose() }
 }
 
-function Invoke-WuUserAppInstall {
+function Initialize-WuStartup {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$EntryPath, [Parameter(Mandatory)]$Environment,
+        [switch]$Plain, [switch]$Preview, [switch]$Repair, [switch]$NoKeyNavigation,
+        [string]$ExpectedUserSid, [int]$ExpectedSessionId)
+    if ($ExpectedUserSid) {
+        # A credentials prompt can switch accounts. Do not configure the other account's profile.
+        if (-not $Environment.IsAdmin -or $Environment.UserSid -cne $ExpectedUserSid -or
+            (Get-WuProcessSessionId) -ne $ExpectedSessionId) {
+            throw 'Startup did not retain the same Windows user and session with administrator access. Sign in to the administrator account you want to configure, or use -Preview.'
+        }
+        return $true
+    }
+    if ($Preview -or -not $Environment.SupportedOS -or $Environment.IsAdmin) { return $true }
+    $sessionId = Get-WuProcessSessionId
+    if ($sessionId -le 0 -or $Environment.UserSid -notmatch '\AS-1-[0-9-]+\z') { throw 'Startup needs a verified, interactive Windows user.' }
+    $entry = [IO.Path]::GetFullPath($EntryPath)
+    if ($entry -match '["\x00-\x1f]' -or -not (Test-Path -LiteralPath $entry -PathType Leaf)) { throw 'The WinUtility entry script is unavailable.' }
+    $executable = 'powershell.exe'
+    if ($PSVersionTable.PSEdition -eq 'Core') { $executable = 'pwsh.exe' }
+    $shell = Join-Path $PSHOME $executable
+    $arguments = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File "' + $entry + '"'
+    if ($Plain) { $arguments += ' -Plain' }
+    if ($Repair) { $arguments += ' -Repair' }
+    if ($NoKeyNavigation) { $arguments += ' -NoKeyNavigation' }
+    $arguments += ' -ExpectedUserSid "' + $Environment.UserSid + '" -ExpectedSessionId ' + $sessionId
+    Write-Host 'Opening WinUtility as administrator. Approve the Windows prompt once to continue.'
+    $child = $null
+    try {
+        $child = Start-Process -FilePath $shell -ArgumentList $arguments -Verb RunAs -PassThru -ErrorAction Stop
+        # Wait for the menu itself, preserving the checkout without waiting for apps it launches.
+        $child.WaitForExit()
+        if ($child.ExitCode -ne 0) { throw "The administrator session exited with code $($child.ExitCode)." }
+    }
+    catch {
+        $cause = $_.Exception
+        while ($null -ne $cause) {
+            if ($cause -is [ComponentModel.Win32Exception] -and $cause.NativeErrorCode -eq 1223) {
+                throw 'Administrator access was cancelled. Run WinUtility again to approve startup, or use -Preview to browse without changes.'
+            }
+            $cause = $cause.InnerException
+        }
+        throw
+    }
+    finally { if ($child -is [IDisposable]) { $child.Dispose() } }
+    return $false
+}
+
+function Invoke-WuAppInstallProcess {
     param([string]$PackageId, $Environment, [string]$OutputPath)
     if (-not (Test-WuPackageId $PackageId)) { throw 'Invalid WinGet package ID.' }
     if (-not $Environment.SupportedOS -or -not $Environment.WinGetAvailable) { throw 'App installation requires Windows 11 and WinGet available for this user.' }
-    if ($Environment.IsAdmin) { throw 'App installation must start in a normal PowerShell session, without Run as administrator.' }
-    $probe = Get-WuInstalledApp $Environment.WinGetPath $PackageId -AcceptAgreements -OutputPath $OutputPath
+    $activity = ''; if (-not $OutputPath) { $activity = "Checking $PackageId" }
+    $probe = Get-WuInstalledApp $Environment.WinGetPath $PackageId -AcceptAgreements -OutputPath $OutputPath -Activity $activity
     if ($probe.Status -ne 'NotInstalled') {
         return [pscustomobject]@{ Phase = 'Probe'; ExitCode = $probe.ExitCode; Output = $probe.Output }
     }
     $arguments = @('install', '--id', $PackageId, '--exact', '--source', 'winget', '--no-upgrade', '--silent', '--disable-interactivity', '--accept-package-agreements', '--accept-source-agreements')
-    $native = Invoke-WuWinget -FilePath $Environment.WinGetPath -Arguments $arguments -Visible:(-not $OutputPath) -OutputPath $OutputPath
+    if (-not $OutputPath) { $activity = "Installing $PackageId" }
+    $native = Invoke-WuWinget -FilePath $Environment.WinGetPath -Arguments $arguments -Visible:(-not $OutputPath) -OutputPath $OutputPath -Activity $activity
     return [pscustomobject]@{ Phase = 'Install'; ExitCode = $native.ExitCode; Output = $native.Output }
 }
 
@@ -347,7 +469,7 @@ function Invoke-WuAppInstallWorker {
         # Signal startup before readiness/WinGet probes, which can take time on a new laptop.
         [IO.File]::WriteAllText((Join-Path $directory 'started'), $request.RequestId)
         $environment = Get-WuReadiness
-        $response.Result = Invoke-WuUserAppInstall -PackageId $request.PackageId -Environment $environment -OutputPath (Join-Path $directory 'output.log')
+        $response.Result = Invoke-WuAppInstallProcess -PackageId $request.PackageId -Environment $environment -OutputPath (Join-Path $directory 'output.log')
     }
     catch { $response.Error = $_.Exception.Message }
     Save-WuJournal $response (Join-Path $directory 'result.json')
@@ -409,10 +531,15 @@ function Wait-WuUserInstallTask {
     $resultPath = Join-Path $Directory 'result.json'
     $reader = New-Object IO.StreamReader([IO.File]::Open((Join-Path $Directory 'output.log'), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite), [Text.Encoding]::UTF8)
     $clock = [Diagnostics.Stopwatch]::StartNew()
+    $nextProgress = 0
     try {
         while ($true) {
             $text = $reader.ReadToEnd()
             if ($text.Length -gt 0) { Write-Host $text -NoNewline }
+            if ($clock.Elapsed.TotalSeconds -ge $nextProgress) {
+                Write-Progress -Id 41 -Activity 'Installing with normal-user permissions' -Status ("Elapsed {0} | Waiting for WinGet" -f $clock.Elapsed.ToString('hh\:mm\:ss'))
+                $nextProgress = $clock.Elapsed.TotalSeconds + 1
+            }
             if ([IO.File]::Exists($resultPath)) {
                 # The response is written atomically after all native output has been logged.
                 $tail = $reader.ReadToEnd()
@@ -430,13 +557,13 @@ function Wait-WuUserInstallTask {
                 throw 'The normal-user app worker exited without a result. Check that this Windows user is signed in and can run PowerShell.'
             }
             if ($clock.Elapsed.TotalSeconds -ge 60 -and -not [IO.File]::Exists((Join-Path $Directory 'started'))) {
-                throw 'The normal-user app worker did not start within 60 seconds. Open WinUtility in a normal PowerShell window and retry.'
+                throw 'The normal-user app worker did not start within 60 seconds. Sign in again and retry, or install this package directly from a normal PowerShell window.'
             }
             if ($clock.Elapsed.TotalHours -ge 6) { throw 'The app worker exceeded six hours. Check the installed app before retrying; installation may be incomplete.' }
             Start-Sleep -Milliseconds 250
         }
     }
-    finally { $reader.Dispose(); $clock.Stop() }
+    finally { $reader.Dispose(); $clock.Stop(); Write-Progress -Id 41 -Activity 'Installing with normal-user permissions' -Completed; Write-Host '' }
 }
 
 function Invoke-WuAppInstallAsUser {
@@ -457,7 +584,7 @@ function Invoke-WuAppInstallAsUser {
         $requestPath = Join-Path $directory 'request.json'
         Save-WuJournal $request $requestPath
         [IO.File]::WriteAllText((Join-Path $directory 'output.log'), '')
-        Write-Host "Installing $PackageId as your normal Windows user. Approve any installer UAC prompt to continue."
+        Write-Host "$PackageId requires normal-user permissions. Retrying as your signed-in Windows user."
         $context = Start-WuUserInstallTask -RequestPath $requestPath -UserSid $Environment.UserSid -TaskName ('WinUtility-App-' + $id)
         $response = Wait-WuUserInstallTask -Context $context -Directory $directory
         $completed = $true
@@ -471,7 +598,7 @@ function Invoke-WuAppInstallAsUser {
         return $result
     }
     catch {
-        $failure = New-Object InvalidOperationException("App install could not complete as a normal user: $($_.Exception.Message) Open WinUtility without Run as administrator and retry the failed apps. Check installed apps first if an installer was interrupted.", $_.Exception)
+        $failure = New-Object InvalidOperationException("App install could not complete as a normal user: $($_.Exception.Message) Install this package directly with WinGet from a normal PowerShell window. Check installed apps first if an installer was interrupted.", $_.Exception)
         try { $failure.Data['Output'] = [IO.File]::ReadAllText((Join-Path $directory 'output.log')) } catch { }
         throw $failure
     }
@@ -520,7 +647,9 @@ function Invoke-WuApply {
     try {
         $run = New-WuJournal $environment $HistoryDirectory
         Save-WuJournal $run.Document $run.Path
+        $index = 0
         foreach ($action in $Plan) {
+            $index++
             $record = [pscustomobject][ordered]@{
                 Id = $action.Id; Name = $action.Name; Kind = $action.Kind; PackageId = $action.PackageId
                 Status = 'Pending'; Message = ''; Changed = $false; RestartRequired = $false
@@ -528,7 +657,7 @@ function Invoke-WuApply {
             }
             $run.Document.Actions += $record
             $capability = Get-WuActionCapability $action
-            if ($null -ne $OnProgress) { & $OnProgress $action.Name | Out-Null }
+            if ($null -ne $OnProgress) { & $OnProgress $action.Name $index $Plan.Count | Out-Null }
             # Persist failures/intent before running the next operation. A journal write failure stops the queue.
             Save-WuJournal $run.Document $run.Path
             if ($capability -eq 'NotImplemented') { $record.Status = 'Skipped'; $record.Message = 'Not implemented yet. No changes made.' }
@@ -553,11 +682,15 @@ function Invoke-WuApply {
             elseif (-not $environment.WinGetAvailable) { $record.Status = 'Skipped'; $record.Message = 'WinGet is unavailable; this app was not installed.' }
             else {
                 try {
-                    if ($environment.IsAdmin) {
-                        $native = Invoke-WuAppInstallAsUser -PackageId $action.PackageId -Environment $environment -HistoryDirectory $HistoryDirectory
-                    }
-                    else { $native = Invoke-WuUserAppInstall -PackageId $action.PackageId -Environment $environment }
+                    $native = Invoke-WuAppInstallProcess -PackageId $action.PackageId -Environment $environment
                     $record.Output = $native.Output
+                    $record.ExitCode = $native.ExitCode
+                    # Retry only explicit elevation-prohibited outcomes, never generic installer failures.
+                    if ($environment.IsAdmin -and $native.ExitCode -in @(-1978335146, -1978335107)) {
+                        $record.Output += "`nWinGet refused administrator access (exit $($native.ExitCode)). Retrying as the same normal user.`n"
+                        $native = Invoke-WuAppInstallAsUser -PackageId $action.PackageId -Environment $environment -HistoryDirectory $HistoryDirectory
+                        $record.Output += $native.Output
+                    }
                     $record.ExitCode = $native.ExitCode
                     if ($native.Phase -eq 'Install') { Set-WuInstallResult $record $native.ExitCode }
                     elseif ($native.ExitCode -eq 0) { $record.Status = 'AlreadyInstalled'; $record.Message = 'Already installed; no upgrade requested.' }
@@ -565,7 +698,7 @@ function Invoke-WuApply {
                 }
                 catch {
                     $record.Status = 'Failed'; $record.Changed = $null; $record.Message = $_.Exception.Message
-                    if ($_.Exception.Data.Contains('Output')) { $record.Output = [string]$_.Exception.Data['Output'] }
+                    if ($_.Exception.Data.Contains('Output')) { $record.Output += [string]$_.Exception.Data['Output'] }
                 }
             }
             Save-WuJournal $run.Document $run.Path
@@ -646,4 +779,4 @@ function Undo-WuExplorerRun {
     finally { $lock.Dispose() }
 }
 
-Export-ModuleMember -Function Get-WuReadiness, Get-WuActionCapability, Get-WuExecutionReview, Invoke-WuApply, Get-WuHistory, Undo-WuExplorerRun, Test-WuPackageId, Find-WuWinGetPackage, Get-WuWinGetPackageDetails, Invoke-WuAppInstallWorker
+Export-ModuleMember -Function Get-WuReadiness, Initialize-WuStartup, Get-WuActionCapability, Get-WuExecutionReview, Invoke-WuApply, Get-WuHistory, Undo-WuExplorerRun, Test-WuPackageId, Find-WuWinGetPackage, Get-WuWinGetPackageDetails, Invoke-WuAppInstallWorker

@@ -1,9 +1,10 @@
 # Windows repair guide
 
-Open **6 -> Repair Windows**, or launch `WinUtility.ps1 -Repair`. On Windows,
-**A** opens a dedicated administrator window and returns to the original menu
-when that window closes. The GitHub launcher keeps its temporary files until the
-administrator window exits. Linux and `-Preview` show command plans only.
+Open **6 -> Repair Windows**, or launch `WinUtility.ps1 -Repair`. On Windows 11,
+startup requests administrator access once, which also covers repair commands.
+The GitHub launcher keeps its temporary files until the administrator window
+exits. If the terminal is opened separately without startup elevation, **A** opens
+an administrator repair window. Linux and `-Preview` show command plans only.
 Use arrows and Enter to navigate, or type a displayed shortcut. Esc returns from
 the current screen. Confirmation starts on Cancel. `-NoKeyNavigation` uses typed
 input and is retained when opening the administrator repair window.
@@ -173,8 +174,9 @@ Before release, test in a disposable Windows 11 VM with a snapshot:
 
 - Launch from a path with spaces in Windows PowerShell 5.1 and PowerShell 7.
   Verify `-Repair`, `-Plain` and `-Preview`, and all main-menu choices.
-- Launch as a standard user, cancel UAC, then accept it. Verify the original
-  menu waits for the child and saved reports survive the GitHub launcher's cleanup.
+- Launch from a normal shell, cancel startup UAC, then relaunch and accept it.
+  Verify the launcher waits for the administrator menu and saved reports survive
+  cleanup. Verify `-Preview` does not request UAC.
 - Run individual DISM checks and SFC VerifyOnly, including a non-English Windows
   installation. Check that output is readable and report/log files agree.
 - Confirm CHKDSK `/scan` no longer rejects a quote as an invalid parameter. Check

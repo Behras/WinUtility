@@ -26,6 +26,12 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\WinUtility.ps1
 | `-NoKeyNavigation` | Use typed numbers/letters and Enter instead of a selection cursor. |
 | `-Preview` | Browse and save selections with Windows execution disabled. |
 
+Windows 11 startup requests administrator access once. An already elevated shell
+continues directly. Cancelling UAC stops startup; relaunch to approve, or add
+`-Preview` to browse without elevation. Sign in to the administrator account you
+intend to configure: a relaunch with another account's credentials is refused
+to avoid changing the wrong user's settings. Linux never requests elevation.
+
 For a terminal with limited console support:
 
 ```powershell
@@ -45,7 +51,9 @@ portable setup files; app installation, undo, and repair execution require Windo
 
 Use **Up/Down** or **Tab** to move, **Enter** to select, and **Esc** to return.
 **Home/End** jump to the first/last menu item when no shortcut is being typed.
-The highlighted row shows a `>` marker; its description appears below the list.
+The focused row uses black text on a yellow background with a `>` marker; cyan
+headings and green checked items remain distinct. Its description appears below
+the list. `-Plain` keeps the marker without colors.
 Long lists scroll within the selection area. Focus is remembered when you return
 to a menu or toggle an app.
 
@@ -111,19 +119,22 @@ Linux and with `-Preview`; local catalog search still works.
 ### Apply and retry
 
 Choose **Review & apply → Apply supported changes**. The confirmation includes
-app license/source agreements. Installers run silently where supported and may
-request administrator access. Apps start with normal-user permissions even when
-WinUtility itself is running as administrator. This applies to bundled apps and
-packages added through live search; Spotify and similar installers can run without
-rejecting an administrator shell. Existing apps are skipped; the queue does not
-upgrade them. Duplicate package selections produce one install action.
+app license/source agreements. Installers run silently where supported, one app
+at a time, using the administrator access granted at startup. WinGet output is
+streamed live without turning spinner updates into extra lines. The queue shows
+the current item and an elapsed-time indicator, including while checking whether
+an app is already installed. Individual installers can still display prompts.
+Existing apps are skipped; the queue does not upgrade them. Duplicate package
+selections produce one install action.
 
-The worker uses the same Windows account and checks its permissions before
-installing. If Windows cannot provide that account's normal session, the app gets
-a failed result with instructions; the rest of the queue continues. Start
-WinUtility from a normal PowerShell window if you used another account's
-administrator credentials, disabled UAC, or are using the built-in Administrator
-account. Repair commands continue to use administrator access separately.
+When WinGet explicitly reports that an app forbids elevation, WinUtility retries
+it once as the same normal Windows user. This supports Spotify and applies to
+both bundled and discovered packages. The worker verifies the account, session,
+and permissions before checking and installing. If that session is unavailable,
+the app gets a failed result and the queue continues. Install that package directly
+using WinGet from a normal PowerShell window if the worker cannot start.
+Other failures are reported without an automatic retry under another account or
+permission level. Repairs use the administrator session already open.
 
 Results distinguish installation, existing apps, failures, cancellation, skipped
 items, and restart requirements. **Retry failed app installs** retries only failed
@@ -170,11 +181,17 @@ credentials are used. See the [repair guide](REPAIR.md).
   independently of WinGet. [Microsoft: WinGet](https://learn.microsoft.com/en-us/windows/package-manager/winget/).
 - **Spotify says it cannot install as administrator:** update and restart
   WinUtility, then select the failed apps again. Within the same session, use
-  **Retry failed app installs** in Review & apply. The app worker runs with normal
-  permissions. If its startup fails, launch WinUtility
-  from a normal PowerShell window with UAC enabled and select the failed apps again.
+  **Retry failed app installs** in Review & apply. WinUtility automatically retries
+  WinGet's elevation-prohibited result with normal permissions. If the worker
+  cannot start, install the package directly from a normal PowerShell window with
+  `winget install --id Spotify.Spotify --exact --source winget`.
   [Spotify's WinGet manifest](https://github.com/microsoft/winget-pkgs/tree/master/manifests/s/Spotify/Spotify)
   declares that elevation is prohibited.
+- **App installation seems paused:** watch the package name, live output, and
+  elapsed time; silent installers can take several minutes. Check for installer
+  dialogs. Read-only WinGet queries time out after two minutes (30 seconds for
+  the startup version check). Installs are allowed to finish; a timeout is not
+  treated as a successful installation.
 - **Repair stops:** read the native error displayed in the report. **O** shows the
   end of each command log. [CHKDSK exit 3](REPAIR.md#chkdsk-exits-immediately-with-code-3).
 - **An update is missing:** close all WinUtility windows and launch from the updated

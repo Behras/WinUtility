@@ -9,7 +9,7 @@ catalog browsing, saved setups and repair command review available without live 
 ## Responsibilities
 
 ```text
-bootstrap.ps1 -> download one commit -> WinUtility.ps1
+bootstrap.ps1 -> download one archive -> WinUtility.ps1
                                           |
                                   Terminal UI module
                                           |
@@ -21,7 +21,7 @@ data/*.json -> Core module -> selection -> ordered plan -> review
 | Component | Responsibility |
 | --- | --- |
 | `WinUtility.ps1` | Import modules, load catalogs, create the session, start the menu. |
-| `bootstrap.ps1` | Resolve GitHub `main` to a commit, download/extract that commit, launch in a child PowerShell process, clean temporary files. |
+| `bootstrap.ps1` | Resolve GitHub `main`, download/extract one archive with bounded retries and a direct download fallback, launch in a child PowerShell process, clean temporary files. |
 | `src/WinUtility.Terminal.psm1` | Menus, item toggles, previews, confirmations, and displaying results. |
 | `src/WinUtility.Input.psm1` | Console key input, focused selection display, text editing, and cursor restoration. |
 | `src/WinUtility.Core.psm1` | Catalog validation, session state, selection changes, planning, JSON persistence. |
@@ -36,6 +36,19 @@ selection and review do not execute Windows actions. Real apply has a separate
 UI confirmation, and the execution adapter independently checks Windows/user
 identity before creating history or making changes. The bootstrap's child-process
 execution policy does not change persistent PowerShell execution policies.
+
+The bootstrap retries temporary HTTP 408/500/502/503/504 responses and transport
+failures up to three times per stage, waiting two then four seconds. Metadata
+requests use a 30-second timeout; archive requests use 120 seconds. A successful
+API lookup pins archive requests to a validated commit SHA, including the codeload
+fallback. If the lookup exhausts retries, a complete `main` branch ZIP can be
+downloaded directly from codeload without the API. This remains one consistent
+project snapshot, but the launcher reports that its exact commit ID is unverified.
+Malformed metadata, authorization/not-found errors, corrupt archives and missing
+files stop execution. Partial downloads are removed before retrying. Retries
+cover HTTP requests only; the menu is never restarted automatically. The initial
+`irm` fetch occurs outside the launcher, so its failures require a local copy or
+a later retry.
 
 ## Selection and planning
 

@@ -14,10 +14,16 @@ Open **PowerShell** normally and run:
 irm https://raw.githubusercontent.com/Behras/WinUtility/main/bootstrap.ps1 | iex
 ```
 
-This downloads and runs WinUtility from this repository. The launcher uses a
-single project revision for each session and removes its temporary files on exit.
+This downloads and runs WinUtility from this repository. The launcher downloads
+one project archive for each session and removes its temporary files on exit.
+It retries temporary network errors. If GitHub's API stays unavailable, it uses
+a direct archive of the `main` branch and reports that the commit ID is unverified.
 Internet access is required. Review the [launcher](bootstrap.ps1) before running
 downloaded code.
+
+If you still get a **504 Gateway Timeout**, [download the ZIP directly](https://codeload.github.com/Behras/WinUtility/zip/refs/heads/main),
+extract it, and use the local command below. This opens the menu without the
+launcher's GitHub API lookup.
 
 ### Run a local copy
 

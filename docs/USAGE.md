@@ -4,6 +4,11 @@
 
 The [README](../README.md#quick-start) contains the GitHub launch command. Each
 launch downloads one project revision and starts a child PowerShell process.
+Temporary gateway errors and transport timeouts get up to three attempts, with
+two- and four-second delays. If the revision lookup remains unavailable, the
+launcher downloads one complete branch archive from GitHub's download service.
+It clearly reports that the exact commit ID was not verified. When the revision
+lookup succeeds, archive retries continue to use that same commit.
 The process-only execution-policy option does not change the machine's stored
 policy. Organization-enforced policies still apply.
 [Microsoft: execution policies](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_execution_policies?view=powershell-5.1)
@@ -151,6 +156,14 @@ credentials are used. See the [repair guide](REPAIR.md).
 
 ## Troubleshooting
 
+- **504 Gateway Timeout / "could not contact GitHub":** the launcher could not
+  complete its GitHub revision lookup. The updated launcher retries and can use
+  a direct branch archive if the API remains unavailable. For an immediate
+  workaround, [download the project ZIP](https://codeload.github.com/Behras/WinUtility/zip/refs/heads/main),
+  extract it, and run the local command at the top of this guide. A local checkout
+  opens the menu without a GitHub download; app installation still needs internet.
+  If the error appears before the WinUtility download banner, the initial
+  `irm` request failed before the launcher could run. Use the ZIP or retry later.
 - **Arrow keys do not work:** restart with `-NoKeyNavigation`; typed shortcuts remain available.
 - **Apps cannot install:** open Machine readiness and check WinGet. It may not be
   registered immediately after the first Windows login. Explorer settings work

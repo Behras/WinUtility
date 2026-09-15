@@ -127,12 +127,49 @@ function Get-WuReadiness {
     return $report
 }
 
+function Test-WuPackageId {
+    param($PackageId)
+    return $PackageId -is [string] -and $PackageId.Length -le 128 -and $PackageId -cmatch '\A[A-Za-z0-9][A-Za-z0-9._+-]*\z'
+}
+
+function Invoke-WuPackageLookup {
+    param([ValidateSet('search', 'show')][string]$Operation, [string]$Value, [switch]$AcceptSourceAgreements)
+    if ($Operation -eq 'show' -and -not (Test-WuPackageId $Value)) { throw 'Enter an exact WinGet package ID.' }
+    if ($Operation -eq 'search' -and ([string]::IsNullOrWhiteSpace($Value) -or $Value.Length -gt 100 -or $Value -match '["\x00-\x1f\x7f]')) {
+        throw 'Enter a search of 1-100 characters without double quotes or control characters.'
+    }
+    $environment = Get-WuReadiness
+    if (-not $environment.SupportedOS -or -not $environment.WinGetAvailable) { throw 'Live search requires Windows 11 with WinGet available. Use the bundled catalog on this host.' }
+    $arguments = @('search', '--query', $Value, '--count', '40')
+    if ($Operation -eq 'show') { $arguments = @('show', '--id', $Value, '--exact') }
+    $arguments += @('--source', 'winget', '--disable-interactivity')
+    if ($AcceptSourceAgreements) { $arguments += '--accept-source-agreements' }
+    $native = Invoke-WuWinget -FilePath $environment.WinGetPath -Arguments $arguments
+    $status = 'Failed'
+    if ($native.ExitCode -eq 0) { $status = 'Found' }
+    elseif ($native.ExitCode -eq -1978335212) { $status = 'NotFound' }
+    elseif ($native.ExitCode -eq -1978335162) { $status = 'SourceAgreementRequired' }
+    return [pscustomobject]@{ Status = $status; ExitCode = $native.ExitCode; Output = $native.Output }
+}
+
+function Find-WuWinGetPackage {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Query, [switch]$AcceptSourceAgreements)
+    return Invoke-WuPackageLookup -Operation search -Value $Query -AcceptSourceAgreements:$AcceptSourceAgreements
+}
+
+function Get-WuWinGetPackageDetails {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$PackageId, [switch]$AcceptSourceAgreements)
+    return Invoke-WuPackageLookup -Operation show -Value $PackageId -AcceptSourceAgreements:$AcceptSourceAgreements
+}
+
 function Get-WuActionCapability {
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Action)
     if ($Action.Kind -ceq 'Setting' -and $script:ExplorerValues.ContainsKey($Action.Id) -and $Action.Value -ceq 'visible') { return 'Explorer' }
     if ($Action.Kind -ceq 'App' -and $Action.Value -ceq 'installed' -and $Action.Id -cmatch '^app\.[a-z0-9.-]+$' -and
-        $Action.PackageId -is [string] -and $Action.PackageId -cmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') { return 'WinGet' }
+        (Test-WuPackageId $Action.PackageId)) { return 'WinGet' }
     return 'PreviewOnly'
 }
 
@@ -415,4 +452,4 @@ function Undo-WuExplorerRun {
     finally { $lock.Dispose() }
 }
 
-Export-ModuleMember -Function Get-WuReadiness, Get-WuActionCapability, Get-WuExecutionReview, Invoke-WuApply, Get-WuHistory, Undo-WuExplorerRun
+Export-ModuleMember -Function Get-WuReadiness, Get-WuActionCapability, Get-WuExecutionReview, Invoke-WuApply, Get-WuHistory, Undo-WuExplorerRun, Test-WuPackageId, Find-WuWinGetPackage, Get-WuWinGetPackageDetails

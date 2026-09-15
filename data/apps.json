@@ -10,6 +10,38 @@
       "desiredValue": "installed"
     },
     {
+      "id": "app.chrome",
+      "name": "Google Chrome",
+      "category": "Browsers",
+      "description": "Web browser with Google account sync.",
+      "packageId": "Google.Chrome",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.brave",
+      "name": "Brave",
+      "category": "Browsers",
+      "description": "Web browser with built-in content blocking.",
+      "packageId": "Brave.Brave",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.vivaldi",
+      "name": "Vivaldi",
+      "category": "Browsers",
+      "description": "Web browser with extensive tab and layout customization.",
+      "packageId": "Vivaldi.Vivaldi",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.librewolf",
+      "name": "LibreWolf",
+      "category": "Browsers",
+      "description": "Firefox-based browser with privacy-focused defaults.",
+      "packageId": "LibreWolf.LibreWolf",
+      "desiredValue": "installed"
+    },
+    {
       "id": "app.7zip",
       "name": "7-Zip",
       "category": "Utilities",
@@ -26,6 +58,46 @@
       "desiredValue": "installed"
     },
     {
+      "id": "app.everything",
+      "name": "Everything",
+      "category": "Utilities",
+      "description": "Quickly search local file and folder names.",
+      "packageId": "voidtools.Everything",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.notepadplusplus",
+      "name": "Notepad++",
+      "category": "Utilities",
+      "description": "Text editor with syntax highlighting and tabs.",
+      "packageId": "Notepad++.Notepad++",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.sharex",
+      "name": "ShareX",
+      "category": "Utilities",
+      "description": "Capture screenshots, record the screen and annotate images.",
+      "packageId": "ShareX.ShareX",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.rufus",
+      "name": "Rufus",
+      "category": "Utilities",
+      "description": "Create bootable USB installation media.",
+      "packageId": "Rufus.Rufus",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.wiztree",
+      "name": "WizTree",
+      "category": "Utilities",
+      "description": "Visualize disk usage and find large files.",
+      "packageId": "AntibodySoftware.WizTree",
+      "desiredValue": "installed"
+    },
+    {
       "id": "app.vlc",
       "name": "VLC media player",
       "category": "Media",
@@ -34,11 +106,283 @@
       "desiredValue": "installed"
     },
     {
+      "id": "app.spotify",
+      "name": "Spotify",
+      "category": "Media",
+      "description": "Music and podcast streaming client; account required.",
+      "packageId": "Spotify.Spotify",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.mpvnet",
+      "name": "mpv.net",
+      "category": "Media",
+      "description": "Desktop media player based on mpv.",
+      "packageId": "mpv.net",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.obs",
+      "name": "OBS Studio",
+      "category": "Media",
+      "description": "Record video and stream from the desktop.",
+      "packageId": "OBSProject.OBSStudio",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.audacity",
+      "name": "Audacity",
+      "category": "Media",
+      "description": "Record and edit audio.",
+      "packageId": "Audacity.Audacity",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.handbrake",
+      "name": "HandBrake",
+      "category": "Media",
+      "description": "Convert video files between common formats.",
+      "packageId": "HandBrake.HandBrake",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.blender",
+      "name": "Blender",
+      "category": "Media",
+      "description": "Create 3D models, animation and rendered scenes.",
+      "packageId": "BlenderFoundation.Blender",
+      "desiredValue": "installed"
+    },
+    {
       "id": "app.vscode",
       "name": "Visual Studio Code",
       "category": "Development",
       "description": "A code editor with optional extensions.",
       "packageId": "Microsoft.VisualStudioCode",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.git",
+      "name": "Git",
+      "category": "Development",
+      "description": "Version control tools and Git Bash for Windows.",
+      "packageId": "Git.Git",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.githubdesktop",
+      "name": "GitHub Desktop",
+      "category": "Development",
+      "description": "Desktop interface for working with Git repositories.",
+      "packageId": "GitHub.GitHubDesktop",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.python",
+      "name": "Python 3.14",
+      "category": "Development",
+      "description": "Python programming language runtime and standard tools.",
+      "packageId": "Python.Python.3.14",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.nodejs",
+      "name": "Node.js LTS",
+      "category": "Development",
+      "description": "Long-term-support JavaScript runtime and npm.",
+      "packageId": "OpenJS.NodeJS.LTS",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.powershell",
+      "name": "PowerShell 7",
+      "category": "Development",
+      "description": "Modern PowerShell installed alongside Windows PowerShell.",
+      "packageId": "Microsoft.PowerShell",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.terminal",
+      "name": "Windows Terminal",
+      "category": "Development",
+      "description": "Tabbed terminal host for PowerShell and other shells.",
+      "packageId": "Microsoft.WindowsTerminal",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.postman",
+      "name": "Postman",
+      "category": "Development",
+      "description": "Build and test HTTP APIs.",
+      "packageId": "Postman.Postman",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.libreoffice",
+      "name": "LibreOffice",
+      "category": "Office & notes",
+      "description": "Documents, spreadsheets and presentations.",
+      "packageId": "TheDocumentFoundation.LibreOffice",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.onlyoffice",
+      "name": "ONLYOFFICE Desktop Editors",
+      "category": "Office & notes",
+      "description": "Desktop editors for documents, spreadsheets and presentations.",
+      "packageId": "ONLYOFFICE.DesktopEditors",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.sumatrapdf",
+      "name": "SumatraPDF",
+      "category": "Office & notes",
+      "description": "Lightweight PDF and ebook reader.",
+      "packageId": "SumatraPDF.SumatraPDF",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.pdf24",
+      "name": "PDF24 Creator",
+      "category": "Office & notes",
+      "description": "Create, merge, split and convert PDF files.",
+      "packageId": "geeksoftwareGmbH.PDF24Creator",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.obsidian",
+      "name": "Obsidian",
+      "category": "Office & notes",
+      "description": "Markdown notes stored in local folders.",
+      "packageId": "Obsidian.Obsidian",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.joplin",
+      "name": "Joplin",
+      "category": "Office & notes",
+      "description": "Notebook and to-do app with optional synchronization.",
+      "packageId": "Joplin.Joplin",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.discord",
+      "name": "Discord",
+      "category": "Communication",
+      "description": "Voice, video and community chat client.",
+      "packageId": "Discord.Discord",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.signal",
+      "name": "Signal",
+      "category": "Communication",
+      "description": "Desktop messaging client linked to your Signal account.",
+      "packageId": "OpenWhisperSystems.Signal",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.telegram",
+      "name": "Telegram Desktop",
+      "category": "Communication",
+      "description": "Desktop client for Telegram messaging.",
+      "packageId": "Telegram.TelegramDesktop",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.zoom",
+      "name": "Zoom",
+      "category": "Communication",
+      "description": "Video meetings and team communication.",
+      "packageId": "Zoom.Zoom",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.slack",
+      "name": "Slack",
+      "category": "Communication",
+      "description": "Messaging client for Slack workspaces.",
+      "packageId": "SlackTechnologies.Slack",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.steam",
+      "name": "Steam",
+      "category": "Gaming",
+      "description": "Install and manage games in your Steam library.",
+      "packageId": "Valve.Steam",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.epic",
+      "name": "Epic Games Launcher",
+      "category": "Gaming",
+      "description": "Install and manage Epic Games titles.",
+      "packageId": "EpicGames.EpicGamesLauncher",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.gog",
+      "name": "GOG GALAXY",
+      "category": "Gaming",
+      "description": "Manage and install games from GOG.",
+      "packageId": "GOG.Galaxy",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.bitwarden",
+      "name": "Bitwarden",
+      "category": "Passwords & VPN",
+      "description": "Desktop password manager with account synchronization.",
+      "packageId": "Bitwarden.Bitwarden",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.keepassxc",
+      "name": "KeePassXC",
+      "category": "Passwords & VPN",
+      "description": "Manage passwords in a local encrypted database.",
+      "packageId": "KeePassXCTeam.KeePassXC",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.protonvpn",
+      "name": "Proton VPN",
+      "category": "Passwords & VPN",
+      "description": "VPN client for a Proton VPN account.",
+      "packageId": "Proton.ProtonVPN",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.crystaldiskinfo",
+      "name": "CrystalDiskInfo",
+      "category": "Diagnostics",
+      "description": "View drive health information and SMART readings.",
+      "packageId": "CrystalDewWorld.CrystalDiskInfo",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.hwinfo",
+      "name": "HWiNFO",
+      "category": "Diagnostics",
+      "description": "Inspect hardware details, temperatures and sensor readings.",
+      "packageId": "REALiX.HWiNFO",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.cpuz",
+      "name": "CPU-Z",
+      "category": "Diagnostics",
+      "description": "Inspect processor, motherboard and memory information.",
+      "packageId": "CPUID.CPU-Z",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.gpuz",
+      "name": "GPU-Z",
+      "category": "Diagnostics",
+      "description": "Inspect graphics-card details and sensors.",
+      "packageId": "TechPowerUp.GPU-Z",
       "desiredValue": "installed"
     }
   ]

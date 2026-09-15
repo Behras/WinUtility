@@ -136,8 +136,9 @@ signed release or independent integrity check of the initial launcher.
    current selection. These are illustrative setups, not finalized recommendations.
 2. **Manual changes:** toggle individual choices in Privacy & suggestions,
    Desktop & Explorer, Power & battery, or Windows apps & features.
-3. **App installs:** browse Browsers, Utilities, Media, and Development, or press
-   `S` to search by app name. Selecting an app adds it to the shared plan.
+3. **App installs:** browse 48 bundled apps across nine categories, use `S` to
+   search the catalog, or `W` for live WinGet search on Windows. Select multiple
+   apps with numbers/ranges such as `1,3,5-7`, then review the shared queue.
 4. **Review & apply** (or **Review & simulate** in preview mode): see intended
    effects, origins, and, on Windows, current state. `A` applies supported actions
    after confirmation; `S` simulates. Remove items or clear the selection as needed.
@@ -173,6 +174,50 @@ skipped during real execution. Nothing is selected when the app starts.
 ## Applying and undoing changes
 
 ### App installs
+
+The bundled catalog covers **Browsers, Utilities, Media, Development, Office &
+notes, Communication, Gaming, Passwords & VPN, and Diagnostics**. Examples include
+Chrome, Brave, Everything, Notepad++, OBS Studio, Git, LibreOffice, Discord, Steam,
+Bitwarden and HWiNFO. The [full catalog and source links](docs/APP-CATALOG.md) list
+all 48 packages. These are selectable choices; the original example presets retain
+their existing selections.
+
+**Choosing several apps:**
+
+| Input | Action |
+| --- | --- |
+| `1,3,5-7` or `1 3 5-7` | Toggle those visible app numbers together. Repeated numbers toggle once. |
+| `A` / `C` | Select / clear the current page only. |
+| `N` / `P` | Next / previous page, keeping all selections. |
+| `D 3` | Show the description and package ID for visible item 3. |
+| `R` | Review the shared settings/app queue; confirm there to install. |
+| `0` | Back, keeping selections. |
+
+App lists display eight items per page. Numbers continue across pages; only the
+numbers on the current page can be toggled. An invalid number or range rejects the
+whole input without partially changing your selection. Short terminals use compact
+rows; details remain available through `D`.
+
+**Finding apps:** `S` matches names, descriptions, categories and package IDs in
+the bundled catalog and any packages added this session. Search is literal and
+case-insensitive; try `PDF`, `archive` or `password`. `B` browses the whole local
+list. Searches and categories share one queue, and adding the same package again
+does not duplicate it.
+
+**Live WinGet search:** `W` queries the `winget` source for up to 40 matches. Enter
+one or several exact package IDs from the output, separated by commas/spaces (up
+to 20 per batch). WinUtility displays each package's native WinGet details, then
+asks to add the batch to the queue. Every ID must resolve; a failed lookup leaves
+the batch unselected. IDs must be complete and correctly capitalized; refine the
+query if WinGet truncates an ID. Search results remain native text, so the utility
+does not guess package identities from localized/truncated table columns.
+[Microsoft: search](https://learn.microsoft.com/en-us/windows/package-manager/winget/search),
+[package details](https://learn.microsoft.com/en-us/windows/package-manager/winget/show).
+
+If WinGet requires source agreements, their acceptance is prompted separately
+before retrying the search. App installation agreements are still confirmed at
+apply time. Linux and `-Preview` offer the bundled catalog and local search; live
+WinGet commands and source-agreement changes are disabled in preview mode.
 
 - The queue uses exact package IDs from the catalog and the `winget` source.
 - Existing apps are kept as-is; `--no-upgrade` also protects against upgrading an
@@ -213,10 +258,16 @@ apply/undo runs from this history directory.
 ### Saved setups
 
 Saved setups default to `Documents\WinUtility\setup.json`; choose another path to
-keep multiple setups. These files contain only catalog IDs and desired values.
+keep multiple setups. These files contain catalog/package IDs and desired values.
 They do not contain commands or install packages. Copy one to another laptop and
 choose **Saved setups -> Import** to reuse it. Preset/manual origin labels are
 session information; imported choices are labeled **Saved setup**.
+
+Selections containing only bundled entries retain schema version 1. Selecting
+additional WinGet packages uses schema version 2, which records their package IDs.
+Both formats import offline, including on Linux. Additional packages appear under
+**From WinGet**, labeled with their exact ID; their details can be checked again
+with live search on Windows. Importing a file does not install or verify packages.
 
 ## Repair Windows
 
@@ -314,6 +365,11 @@ Before release, manually smoke-test on Windows 11 under Windows PowerShell 5.1:
 - In a disposable Windows 11 VM, apply the two Explorer settings; verify them in
   Explorer, restart WinUtility, and undo. Check restoration of absent values too.
 - Install one missing catalog app and rerun the selection to check `AlreadyInstalled`.
+- Select apps from several categories/searches, page forward/back, then export and
+  reload the queue. Test live search with missing/accepted source agreements and
+  a multi-package batch, including a package outside the bundled list. Confirm
+  lookup cancellation/failure adds nothing and a saved dynamic package installs
+  through the normal queue. Verify search/detail output on non-English Windows.
 - Test a declined installer/UAC prompt and an unavailable source; verify saved
   failure output and retry after fixing the problem.
 - Export, restart, import, and test Save/Discard/Cancel on exit.

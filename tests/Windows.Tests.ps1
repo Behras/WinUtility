@@ -63,6 +63,10 @@ function Invoke-WindowsFixture {
                     if ($script:Fake.InstallExit.ContainsKey($id)) { $code = $script:Fake.InstallExit[$id] }
                     if ($code -eq 0) { $script:Fake.Installed[$id] = $true }
                 }
+                elseif ($Arguments[0] -in @('search', 'show')) {
+                    $key = $Arguments[0] + ':' + $id
+                    if ($script:Fake.QueryExit.ContainsKey($key)) { $code = $script:Fake.QueryExit[$key] }
+                }
                 else { throw 'Unexpected native operation in test.' }
                 return [pscustomobject]@{ ExitCode = $code; Output = "Fixture WinGet $($Arguments[0]): $id" }
             }
@@ -70,6 +74,56 @@ function Invoke-WindowsFixture {
         } $Body $directory $script:Catalog
     }
     finally { Remove-Module -ModuleInfo $module -Force }
+}
+
+Test-Case 'WinGet discovery uses an explicit source, bounded search and exact package details without auto-accepting terms' {
+    Invoke-WindowsFixture {
+        param($fake)
+        Assert-Equal 'Found' (Find-WuWinGetPackage -Query 'PDF reader').Status
+        Assert-Equal @('search', '--query', 'PDF reader', '--count', '40', '--source', 'winget', '--disable-interactivity') $fake.WingetCalls[0]
+        Assert-Equal 'Found' (Get-WuWinGetPackageDetails -PackageId 'Notepad++.Notepad++' -AcceptSourceAgreements).Status
+        Assert-Equal @('show', '--id', 'Notepad++.Notepad++', '--exact', '--source', 'winget', '--disable-interactivity', '--accept-source-agreements') $fake.WingetCalls[1]
+        Assert-Equal 0 $fake.Installed.Count
+    }
+}
+
+Test-Case 'WinGet discovery distinguishes empty results, required source terms and failures' {
+    Invoke-WindowsFixture {
+        param($fake)
+        foreach ($spec in @(@(-1978335212, 'NotFound'), @(-1978335162, 'SourceAgreementRequired'), @(87, 'Failed'))) {
+            $fake.QueryExit['search:example'] = $spec[0]
+            $result = Find-WuWinGetPackage -Query example
+            Assert-Equal $spec[1] $result.Status
+            Assert-Equal $spec[0] $result.ExitCode
+            Assert-True ($result.Output.Contains('example'))
+        }
+        Assert-Equal 3 $fake.WingetCalls.Count
+    }
+}
+
+Test-Case 'WinGet discovery refuses unsupported hosts, unavailable WinGet and unsafe argument syntax' {
+    Invoke-WindowsFixture {
+        param($fake)
+        Assert-Throws { Find-WuWinGetPackage -Query 'quoted "name"' }
+        Assert-Throws { Get-WuWinGetPackageDetails -PackageId '--source other' }
+        $fake.Environment.SupportedOS = $false
+        Assert-Throws { Find-WuWinGetPackage -Query example } '*Windows 11*'
+        $fake.Environment.SupportedOS = $true; $fake.Environment.WinGetAvailable = $false
+        Assert-Throws { Find-WuWinGetPackage -Query example } '*WinGet available*'
+        Assert-Equal 0 $fake.WingetCalls.Count
+    }
+}
+
+Test-Case 'Multiple discovered apps and plus-sign package IDs use the existing install queue once per package' {
+    Invoke-WindowsFixture {
+        param($fake)
+        $session = New-WuSession $fake.Catalog
+        Add-WuWinGetSelection $session @('Vendor.Tool', 'Notepad++.Notepad++', 'Vendor.Other', 'vendor.tool')
+        $run = Invoke-WuApply -Plan @(Get-WuPlan $session) -AcceptAppAgreements
+        Assert-Equal @('Installed', 'Installed', 'Installed') @($run.Actions.Status)
+        Assert-Equal 3 @($fake.WingetCalls | Where-Object { $_[0] -eq 'install' }).Count
+        Assert-Equal 3 $fake.Installed.Count
+    }
 }
 
 Test-Case 'Live actions refuse an unsupported host before creating history or making changes' {

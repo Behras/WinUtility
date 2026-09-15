@@ -34,11 +34,11 @@ function Read-WuJson {
 }
 
 function Assert-WuDocument {
-    param($Document, [string]$ListName, [string]$Context)
+    param($Document, [string]$ListName, [string]$Context, [int[]]$Versions = @(1))
     Assert-WuFields $Document @('schemaVersion', $ListName) @('schemaVersion', $ListName) $Context
     if (($Document.schemaVersion -isnot [int] -and $Document.schemaVersion -isnot [long]) -or
-        $Document.schemaVersion -ne 1) {
-        throw "$Context uses an unsupported schemaVersion. Expected 1."
+        $Document.schemaVersion -notin $Versions) {
+        throw "$Context uses an unsupported schemaVersion. Expected $($Versions -join ' or ')."
     }
     if ($Document.$ListName -isnot [array]) { throw "$Context '$ListName' must be an array." }
 }
@@ -48,6 +48,7 @@ function Get-WuCatalog {
     param([Parameter(Mandatory)][string]$DataPath)
 
     $byId = @{}
+    $packageIds = @{}
     $groups = @{}
     foreach ($kind in @('settings', 'apps')) {
         $document = Read-WuJson (Join-Path $DataPath "$kind.json")
@@ -71,9 +72,11 @@ function Get-WuCatalog {
             }
             else {
                 Assert-WuText $item.packageId "WinGet package ID for '$($item.id)'"
-                if ($item.packageId -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
+                if (-not (Test-WuPackageId $item.packageId)) {
                     throw "Invalid WinGet package ID for '$($item.id)'."
                 }
+                if ($packageIds.ContainsKey($item.packageId)) { throw "Duplicate WinGet package ID '$($item.packageId)'." }
+                $packageIds[$item.packageId] = $true
                 if ($item.desiredValue -cne 'installed') { throw "Apps must use desiredValue 'installed'." }
             }
             $item | Add-Member -NotePropertyName kind -NotePropertyValue $(if ($kind -eq 'settings') { 'Setting' } else { 'App' })
@@ -118,6 +121,7 @@ function New-WuSession {
     param([Parameter(Mandatory)]$Catalog)
     return [pscustomobject]@{
         Catalog = $Catalog
+        AdditionalApps = @{}
         Selected = @{}
         SavedFingerprint = '[]'
         SavedPath = $null
@@ -128,17 +132,87 @@ function New-WuSession {
 function Set-WuSelection {
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Session, [Parameter(Mandatory)][string]$Id)
-    if (-not $Session.Catalog.ById.ContainsKey($Id) -or $Session.Catalog.ById[$Id].id -cne $Id) {
-        throw "Unknown catalog ID '$Id'."
-    }
+    $item = Get-WuSessionItem -Session $Session -Id $Id
     # Setting the same desired action twice must not duplicate it or lose its origin.
     if (-not $Session.Selected.ContainsKey($Id)) {
         $Session.Selected[$Id] = [pscustomobject]@{
             Id = $Id
-            Value = $Session.Catalog.ById[$Id].desiredValue
+            Value = $item.desiredValue
             Source = 'Manual'
         }
     }
+}
+
+function Get-WuSessionItem {
+    param($Session, [string]$Id)
+    if ($Session.Catalog.ById.ContainsKey($Id) -and $Session.Catalog.ById[$Id].id -ceq $Id) { return $Session.Catalog.ById[$Id] }
+    if ($Session.AdditionalApps.ContainsKey($Id) -and $Session.AdditionalApps[$Id].id -ceq $Id) { return $Session.AdditionalApps[$Id] }
+    throw "Unknown catalog ID '$Id'."
+}
+
+function Get-WuAppItems {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Session)
+    $Session.Catalog.Apps
+    $Session.AdditionalApps.Values | Sort-Object packageId
+}
+
+function Find-WuCatalogApp {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Session, [Parameter(Mandatory)][string]$Query)
+    foreach ($item in @(Get-WuAppItems $Session)) {
+        foreach ($field in @('name', 'description', 'category', 'packageId')) {
+            if ($item.$field.IndexOf($Query, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $item; break }
+        }
+    }
+}
+
+function New-WuWinGetItem {
+    param([string]$PackageId)
+    $hasher = [Security.Cryptography.SHA256]::Create()
+    try { $hash = [BitConverter]::ToString($hasher.ComputeHash([Text.Encoding]::UTF8.GetBytes($PackageId.ToLowerInvariant()))).Replace('-', '').ToLowerInvariant() }
+    finally { $hasher.Dispose() }
+    return [pscustomobject]@{
+        id = 'app.winget.' + $hash; name = $PackageId; category = 'From WinGet'
+        description = 'Package from the winget source. Use live search to inspect its publisher and installer details.'
+        packageId = $PackageId; desiredValue = 'installed'; kind = 'App'
+    }
+}
+
+function Add-WuWinGetSelection {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Session, [Parameter(Mandatory)][string[]]$PackageIds)
+    # Validate the entire batch before changing the session. The UI verifies package existence.
+    foreach ($packageId in $PackageIds) {
+        if (-not (Test-WuPackageId $packageId)) { throw "Invalid WinGet package ID '$packageId'." }
+    }
+    foreach ($packageId in $PackageIds) {
+        $existing = @(Get-WuAppItems $Session | Where-Object { $_.packageId -ieq $packageId })
+        if ($existing.Count -gt 0) { $item = $existing[0] }
+        else {
+            $item = New-WuWinGetItem $packageId
+            $Session.AdditionalApps[$item.id] = $item
+        }
+        Set-WuSelection -Session $Session -Id $item.id
+    }
+}
+
+function ConvertFrom-WuBatchInput {
+    [CmdletBinding()]
+    param([string]$Text, [int]$First, [int]$Last)
+    if ([string]::IsNullOrWhiteSpace($Text) -or $Text.Length -gt 500) { throw 'Enter numbers such as 1,3,5-7.' }
+    $numbers = @{}
+    foreach ($part in @($Text.Trim() -split '[,\s]+')) {
+        if ($part -notmatch '^([0-9]+)(?:-([0-9]+))?$') { throw 'Use numbers and ranges such as 1,3,5-7.' }
+        $start = 0; $end = 0
+        if (-not [int]::TryParse($Matches[1], [ref]$start)) { throw 'A selection number is too large.' }
+        $end = $start
+        if ($Matches.ContainsKey(2) -and -not [int]::TryParse($Matches[2], [ref]$end)) { throw 'A selection number is too large.' }
+        if ($start -lt $First -or $end -gt $Last -or $end -lt $start) { throw 'Use only the numbers shown on this page, with ascending ranges.' }
+        for ($number = $start; $number -le $end; $number++) { $numbers[$number] = $true }
+    }
+    # Return only after every token passed validation; duplicates toggle just once.
+    $numbers.Keys | Sort-Object
 }
 
 function Remove-WuSelection {
@@ -173,7 +247,7 @@ function Get-WuPlan {
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Session)
     # Catalog order is stable: settings first, then apps. The UI does not execute actions.
-    foreach ($item in @($Session.Catalog.Settings) + @($Session.Catalog.Apps)) {
+    foreach ($item in @($Session.Catalog.Settings) + @(Get-WuAppItems $Session)) {
         if ($Session.Selected.ContainsKey($item.id)) {
             $selection = $Session.Selected[$item.id]
             $isSetting = $item.kind -eq 'Setting'
@@ -212,7 +286,10 @@ function Get-WuSelectionSnapshot {
     param($Session)
     $items = @(
         foreach ($id in @($Session.Selected.Keys | Sort-Object)) {
-            [pscustomobject][ordered]@{ id = $id; value = $Session.Selected[$id].Value }
+            if ($Session.AdditionalApps.ContainsKey($id)) {
+                [pscustomobject][ordered]@{ packageId = $Session.AdditionalApps[$id].packageId; value = $Session.Selected[$id].Value }
+            }
+            else { [pscustomobject][ordered]@{ id = $id; value = $Session.Selected[$id].Value } }
         }
     )
     return (ConvertTo-Json -InputObject $items -Depth 5 -Compress)
@@ -235,6 +312,7 @@ function Export-WuSetup {
         schemaVersion = 1
         selections = @(ConvertFrom-Json -InputObject $fingerprint)
     }
+    if (@($Session.Selected.Keys | Where-Object { $Session.AdditionalApps.ContainsKey($_) }).Count -gt 0) { $document.schemaVersion = 2 }
     $json = ConvertTo-Json -InputObject $document -Depth 5
     # Write beside the destination, then replace it, preserving an existing file if writing fails.
     $temporaryPath = Join-Path $parent ('.winutility-' + [guid]::NewGuid().ToString('N') + '.tmp')
@@ -261,22 +339,29 @@ function Import-WuSetup {
     param([Parameter(Mandatory)]$Catalog, [Parameter(Mandatory)][string]$Path)
     $fullPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
     $document = Read-WuJson $fullPath
-    Assert-WuDocument $document 'selections' 'Saved setup'
+    Assert-WuDocument $document 'selections' 'Saved setup' @(1, 2)
+    $preview = New-WuSession -Catalog $Catalog
     $selection = @{}
     foreach ($entry in $document.selections) {
-        Assert-WuFields $entry @('id', 'value') @('id', 'value') 'Saved selection'
-        Assert-WuText $entry.id 'Saved selection ID'
-        if (-not $Catalog.ById.ContainsKey($entry.id) -or $Catalog.ById[$entry.id].id -cne $entry.id) {
-            throw "Saved setup references unknown catalog ID '$($entry.id)'."
+        if ($document.schemaVersion -eq 2 -and $null -ne $entry -and $entry.PSObject.Properties.Name -ccontains 'packageId') {
+            Assert-WuFields $entry @('packageId', 'value') @('packageId', 'value') 'Saved WinGet selection'
+            if (-not (Test-WuPackageId $entry.packageId) -or $entry.value -cne 'installed') { throw 'Invalid saved WinGet selection.' }
+            Add-WuWinGetSelection -Session $preview -PackageIds @($entry.packageId)
+            $item = @(Get-WuAppItems $preview | Where-Object { $_.packageId -ieq $entry.packageId })[0]
         }
-        if ($selection.ContainsKey($entry.id)) { throw "Saved setup repeats '$($entry.id)'." }
-        if ($entry.value -isnot [string] -or $entry.value -cne $Catalog.ById[$entry.id].desiredValue) {
-            throw "Unsupported desired value for '$($entry.id)'."
+        else {
+            Assert-WuFields $entry @('id', 'value') @('id', 'value') 'Saved selection'
+            Assert-WuText $entry.id 'Saved selection ID'
+            if (-not $Catalog.ById.ContainsKey($entry.id) -or $Catalog.ById[$entry.id].id -cne $entry.id) {
+                throw "Saved setup references unknown catalog ID '$($entry.id)'."
+            }
+            $item = $Catalog.ById[$entry.id]
         }
-        $selection[$entry.id] = [pscustomobject]@{ Id = $entry.id; Value = $entry.value; Source = 'Saved setup' }
+        if ($selection.ContainsKey($item.id)) { throw "Saved setup repeats '$($item.id)'." }
+        if ($entry.value -isnot [string] -or $entry.value -cne $item.desiredValue) { throw "Unsupported desired value for '$($item.id)'." }
+        $selection[$item.id] = [pscustomobject]@{ Id = $item.id; Value = $entry.value; Source = 'Saved setup' }
     }
     # Return a separate session for preview; the active session is never touched here.
-    $preview = New-WuSession -Catalog $Catalog
     $preview.Selected = $selection
     $preview.SavedFingerprint = Get-WuSelectionSnapshot $preview
     $preview.SavedPath = $fullPath
@@ -287,6 +372,8 @@ function Set-WuImportedSetup {
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Session, [Parameter(Mandatory)]$Preview)
     $Session.Selected = @{}
+    $Session.AdditionalApps = @{}
+    foreach ($item in $Preview.AdditionalApps.Values) { $Session.AdditionalApps[$item.id] = New-WuWinGetItem $item.packageId }
     foreach ($entry in $Preview.Selected.Values) {
         $Session.Selected[$entry.Id] = [pscustomobject]@{ Id = $entry.Id; Value = $entry.Value; Source = 'Saved setup' }
     }
@@ -308,4 +395,4 @@ function Get-WuDefaultSetupPath {
     return (Join-Path (Join-Path $documents 'WinUtility') 'setup.json')
 }
 
-Export-ModuleMember -Function Get-WuCatalog, New-WuSession, Set-WuSelection, Remove-WuSelection, Clear-WuSelection, Set-WuPreset, Get-WuPlan, Invoke-WuSimulation, Test-WuUnsavedChanges, Export-WuSetup, Import-WuSetup, Set-WuImportedSetup, Get-WuEnvironment, Get-WuDefaultSetupPath
+Export-ModuleMember -Function Get-WuCatalog, New-WuSession, Set-WuSelection, Remove-WuSelection, Clear-WuSelection, Set-WuPreset, Get-WuPlan, Invoke-WuSimulation, Test-WuUnsavedChanges, Export-WuSetup, Import-WuSetup, Set-WuImportedSetup, Get-WuEnvironment, Get-WuDefaultSetupPath, Get-WuAppItems, Find-WuCatalogApp, Add-WuWinGetSelection, ConvertFrom-WuBatchInput

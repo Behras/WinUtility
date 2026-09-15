@@ -1,10 +1,11 @@
 function Invoke-TerminalScenario {
-    param([string[]]$Answers, $Session, [int]$Width = 78, [int]$Height = 50, [switch]$Plain, [switch]$LiveFixture, [switch]$AdminFixture, [switch]$RepairOnly)
+    param([string[]]$Answers, $Session, [int]$Width = 78, [int]$Height = 50, [switch]$Plain, [switch]$LiveFixture, [switch]$AdminFixture, [switch]$RepairOnly,
+        [ValidateSet('ready', 'agreement', 'missing', 'failed', 'empty')][string]$WinGetScenario = 'missing')
     if ($null -eq $Session) { $Session = New-WuSession -Catalog $script:Catalog }
     $module = Import-Module (Join-Path $script:RepoRoot 'src/WinUtility.Terminal.psm1') -Force -PassThru
     try {
         return (& $module {
-            param($Inputs, $ActiveSession, $DisplayWidth, $DisplayHeight, $PlainMode, $LiveMode, $AdminMode, $RepairMode)
+            param($Inputs, $ActiveSession, $DisplayWidth, $DisplayHeight, $PlainMode, $LiveMode, $AdminMode, $RepairMode, $PackageScenario)
             $script:WuWidthOverride = $DisplayWidth
             $script:WuHeightOverride = $DisplayHeight
             $script:Answers = New-Object System.Collections.Queue
@@ -25,6 +26,9 @@ function Invoke-TerminalScenario {
             $script:UiUndoCalls = 0
             $script:UiRepairCalls = New-Object System.Collections.ArrayList
             $script:UiElevationCalls = 0
+            $script:UiSearchCalls = New-Object System.Collections.ArrayList
+            $script:UiDetailCalls = New-Object System.Collections.ArrayList
+            $script:UiPackageScenario = $PackageScenario
             $environment = [pscustomobject]@{
                 OS = 'Windows 11'; PowerShellVersion = '5.1'; WinGetAvailable = $false; SupportedOS = $true
                 Architecture = 'X64'; WinGetVersion = 'Unavailable'; PendingReboot = $null
@@ -32,6 +36,23 @@ function Invoke-TerminalScenario {
             }
             $script:UiEnvironment = $environment
             function script:Get-WuEnvironment { return $script:UiEnvironment }
+            function script:Find-WuWinGetPackage {
+                param($Query, [switch]$AcceptSourceAgreements)
+                [void]$script:UiSearchCalls.Add([pscustomobject]@{ Query = $Query; Accepted = [bool]$AcceptSourceAgreements })
+                if ($script:UiPackageScenario -eq 'missing') { throw 'WinGet is unavailable (fixture).' }
+                $status = 'Found'; $code = 0
+                if ($script:UiPackageScenario -eq 'agreement' -and -not $AcceptSourceAgreements) { $status = 'SourceAgreementRequired'; $code = -1978335162 }
+                if ($script:UiPackageScenario -eq 'failed') { $status = 'Failed'; $code = 87 }
+                if ($script:UiPackageScenario -eq 'empty') { $status = 'NotFound'; $code = -1978335212 }
+                return [pscustomobject]@{ Status = $status; ExitCode = $code; Output = 'Native search results: Vendor.Tool | Vendor.Other | Mozilla.Firefox' }
+            }
+            function script:Get-WuWinGetPackageDetails {
+                param($PackageId, [switch]$AcceptSourceAgreements)
+                [void]$script:UiDetailCalls.Add($PackageId)
+                $status = 'Found'; $code = 0
+                if ($PackageId -eq 'Vendor.Missing') { $status = 'NotFound'; $code = -1978335212 }
+                return [pscustomobject]@{ Status = $status; ExitCode = $code; Output = "Publisher: Fixture Publisher | Package: $PackageId" }
+            }
             function script:Get-WuRepairEnvironment {
                 return [pscustomobject]@{ Readiness = $script:UiEnvironment; SystemDrive = 'W:'; FileSystem = 'NTFS' }
             }
@@ -88,8 +109,8 @@ function Invoke-TerminalScenario {
             }
             Start-WuTerminal -Session $ActiveSession -Environment $environment -Plain:$PlainMode -Preview:(-not $LiveMode) -Repair:$RepairMode
             if ($script:Answers.Count -ne 0) { throw "Unused test inputs: $($script:Answers.Count)" }
-            return [pscustomobject]@{ Text = $script:OutputLines -join "`n"; Session = $ActiveSession; ColorCalls = $script:ColorCalls; ApplyCalls = $script:UiApplyCalls; UndoCalls = $script:UiUndoCalls; RepairCalls = $script:UiRepairCalls; ElevationCalls = $script:UiElevationCalls }
-        } $Answers $Session $Width $Height $Plain $LiveFixture $AdminFixture $RepairOnly)
+            return [pscustomobject]@{ Text = $script:OutputLines -join "`n"; Session = $ActiveSession; ColorCalls = $script:ColorCalls; ApplyCalls = $script:UiApplyCalls; UndoCalls = $script:UiUndoCalls; RepairCalls = $script:UiRepairCalls; ElevationCalls = $script:UiElevationCalls; SearchCalls = $script:UiSearchCalls; DetailCalls = $script:UiDetailCalls }
+        } $Answers $Session $Width $Height $Plain $LiveFixture $AdminFixture $RepairOnly $WinGetScenario)
     }
     finally { Remove-Module -ModuleInfo $module -Force }
 }
@@ -138,12 +159,86 @@ Test-Case 'All manual and app categories open and return without changing state'
     $answers = @('2')
     foreach ($number in @('1', '2', '3', '4')) { $answers += @($number, '0') }
     $answers += @('0', '3')
-    foreach ($number in @('1', '2', '3', '4')) { $answers += @($number, '0') }
+    $categoryCount = @($script:Catalog.Apps.category | Select-Object -Unique).Count
+    foreach ($number in 1..$categoryCount) { $answers += @($number.ToString(), '0') }
     $answers += @('0', '0')
     $result = Invoke-TerminalScenario -Answers $answers
     Assert-True ($result.Text.Contains('Remove Microsoft Solitaire Collection'))
     Assert-True ($result.Text.Contains('Visual Studio Code'))
     Assert-Equal 0 $result.Session.Selected.Count
+}
+
+Test-Case 'App batches retain selections across categories, detail views, search and queue review' {
+    $result = Invoke-TerminalScenario -Answers @('3', '1', '1,3-4', 'd3', '', '0', 's', 'archive', 'a', '0', 'r', '0', '0', '0', '2')
+    Assert-Equal @('app.7zip', 'app.brave', 'app.firefox', 'app.vivaldi') @($result.Session.Selected.Keys | Sort-Object)
+    Assert-True ($result.Text.Contains('WinGet: Brave.Brave'))
+    Assert-True ($result.Text.Contains('4 apps in queue'))
+    Assert-Equal 0 $result.ApplyCalls.Count
+}
+
+Test-Case 'App paging validates whole batches and select-clear commands affect the visible page only' {
+    $result = Invoke-TerminalScenario -Plain -Height 24 -Answers @('3', 'b', '1,9', '1-3', 'n', '9,9,10', 'p', 'c', '0', '0', '0', '2')
+    Assert-Equal @('app.notepadplusplus', 'app.sharex') @($result.Session.Selected.Keys | Sort-Object)
+    Assert-True ($result.Text.Contains('Use only the numbers shown on this page'))
+    Assert-True ($result.Text.Contains('Page 2 /'))
+    Assert-True ($result.Text.Contains('Toggle: 9,11,13-15'))
+}
+
+Test-Case 'Catalog search and paged app choices wrap within a narrow terminal' {
+    $result = Invoke-TerminalScenario -Plain -Width 40 -Height 24 -Answers @('3', 's', 'PDF', 'a', '0', 'b', 'n', '0', '0', '0', '2')
+    Assert-True ($result.Session.Selected.Count -ge 2)
+    foreach ($line in ($result.Text -split "`n")) { Assert-True ($line.Length -le 40) "Line exceeds width: $line" }
+}
+
+Test-Case 'Live WinGet search previews multiple exact packages before queueing without installation' {
+    $result = Invoke-TerminalScenario -LiveFixture -WinGetScenario ready -Answers @('3', 'w', 'vendor', 'Vendor.Tool, Vendor.Other, Mozilla.Firefox', '1', '', 'r', '0', '0', '0', '2')
+    Assert-Equal @('Vendor.Tool', 'Vendor.Other', 'Mozilla.Firefox') @($result.DetailCalls)
+    Assert-Equal 3 $result.Session.Selected.Count
+    Assert-Equal 2 $result.Session.AdditionalApps.Count
+    Assert-True $result.Session.Selected.ContainsKey('app.firefox')
+    Assert-True ($result.Text.Contains('Publisher: Fixture Publisher'))
+    Assert-Equal 0 $result.ApplyCalls.Count
+}
+
+Test-Case 'Declined live selections and a batch containing an unresolved package change nothing' {
+    $declined = Invoke-TerminalScenario -LiveFixture -WinGetScenario ready -Answers @('3', 'w', 'vendor', 'Vendor.Tool', '0', '', '0', '0')
+    Assert-Equal 0 $declined.Session.Selected.Count
+    $invalid = Invoke-TerminalScenario -LiveFixture -WinGetScenario ready -Answers @('3', 'w', 'vendor', 'Vendor.Tool,Vendor.Missing', '', '0', '0')
+    Assert-Equal 0 $invalid.Session.Selected.Count
+    Assert-Equal 0 $invalid.Session.AdditionalApps.Count
+    Assert-True ($invalid.Text.Contains('No apps from this batch were added'))
+}
+
+Test-Case 'Malformed live package batches are rejected before package lookup' {
+    $result = Invoke-TerminalScenario -LiveFixture -WinGetScenario ready -Answers @('3', 'w', 'vendor', 'Vendor.Tool,bad;command', '', '0', '0')
+    Assert-Equal 0 $result.DetailCalls.Count
+    Assert-Equal 0 $result.Session.Selected.Count
+}
+
+Test-Case 'WinGet source agreement prompts can be cancelled and are accepted only after confirmation' {
+    $declined = Invoke-TerminalScenario -LiveFixture -WinGetScenario agreement -Answers @('3', 'w', 'vendor', '0', '', '0', '0')
+    Assert-Equal 1 $declined.SearchCalls.Count
+    Assert-Equal $false $declined.SearchCalls[0].Accepted
+    $accepted = Invoke-TerminalScenario -LiveFixture -WinGetScenario agreement -Answers @('3', 'w', 'vendor', '1', '0', '0', '0')
+    Assert-Equal 2 $accepted.SearchCalls.Count
+    Assert-Equal $false $accepted.SearchCalls[0].Accepted
+    Assert-Equal $true $accepted.SearchCalls[1].Accepted
+    Assert-Equal 0 $accepted.Session.Selected.Count
+}
+
+Test-Case 'Unavailable, empty and failed live searches preserve the queue and allow returning' {
+    foreach ($scenario in @('missing', 'empty', 'failed')) {
+        $result = Invoke-TerminalScenario -LiveFixture -WinGetScenario $scenario -Answers @('3', 'w', 'vendor', '', '0', '0')
+        Assert-Equal 0 $result.Session.Selected.Count
+        Assert-Equal 0 $result.DetailCalls.Count
+    }
+}
+
+Test-Case 'Live search in preview mode makes no WinGet calls' {
+    $result = Invoke-TerminalScenario -Answers @('3', 'w', '', '0', '0')
+    Assert-Equal 0 $result.SearchCalls.Count
+    Assert-Equal 0 $result.DetailCalls.Count
+    Assert-True ($result.Text.Contains('Bundled catalog search works in this preview'))
 }
 
 Test-Case 'Clearing requires confirmation and restores an initially empty session' {

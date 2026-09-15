@@ -37,8 +37,9 @@ execution policy does not change persistent PowerShell execution policies.
 
 ## Selection and planning
 
-`New-WuSession` holds a validated catalog, a map of selected items keyed by stable
-ID, a fingerprint of the last saved/imported selection, and the last apply result
+`New-WuSession` holds a validated catalog, a session-local map of additional WinGet
+apps, a map of selected items keyed by stable ID, a fingerprint of the last
+saved/imported selection, and the last apply result
 for retrying failed apps. There is one desired
 value per catalog entry in this prototype. Selecting an item queues that value;
 deselecting it removes the planned action, rather than queueing its inverse.
@@ -50,14 +51,23 @@ deselecting it removes the planned action, rather than queueing its inverse.
 - `Get-WuPlan` returns settings first, then apps, each in catalog order. Plan items
   contain `Id`, `Kind`, `Name`, `Category`, `Value`, `Source`, `Effect`, `PackageId`,
   `RequiresAdmin`, and `RequiresRestart`.
+- `Get-WuAppItems` returns bundled apps followed by session additions sorted by
+  package ID. `Add-WuWinGetSelection` validates a whole batch and deduplicates by
+  package ID, including matches already in the bundled catalog. Added items use
+  an internal ID derived from a SHA-256 hash of the normalized package ID; exported
+  files store the readable package ID. The shared catalog is never modified.
+- `Find-WuCatalogApp` performs literal, case-insensitive substring search across
+  names, descriptions, categories and package IDs. `ConvertFrom-WuBatchInput`
+  validates numeric lists/ranges against the visible page before returning any
+  choices; repeated numbers are returned once.
 - `Invoke-WuSimulation -Plan <array>` returns `Id`, `Name`, `Status`, `Message`, and
   `Changed` per item. Status is always `Simulated`; Changed is always false. Empty
   plans return no results. Simulation does not check current machine state.
 
 App administrator/restart metadata are null because installers decide those
 requirements. `Get-WuActionCapability` identifies implemented handlers from code;
-adding a setting to JSON does not give it executable behavior. Existing setup JSON
-remains version 1 and is backward compatible.
+adding a setting to JSON does not give it executable behavior. Existing version 1
+setups remain supported; version 2 adds selections from live WinGet search.
 
 The UI uses `Read-Host` and `Write-Host` through small display helpers. A cyan/green
 palette, framed headings, selection indicators, and category sections share the
@@ -90,11 +100,26 @@ Exported setups use this portable shape:
 }
 ```
 
-Imports accept only catalog IDs with their supported desired values. Unknown
-fields, versions, IDs, duplicate selections, and invalid values reject the entire
-import. JSON is parsed as data; no command text is evaluated. A valid import
+Version 1 imports accept catalog IDs with their supported desired values. Unknown
+fields, unsupported versions, unknown catalog IDs, duplicate selections, and
+invalid values reject the entire import. JSON is parsed as data; no command text
+is evaluated. A valid import
 returns a separate preview session. The UI confirms before replacing the active
 session with `Set-WuImportedSetup`.
+
+When selected apps extend beyond the bundled catalog, exports use schema version
+2. Its selections contain either the same `{id, value}` object for a bundled
+entry or `{packageId, value: "installed"}` for an added package. The source is
+fixed to `winget` in code; custom commands, sources and installer arguments cannot
+be supplied. Imports validate everything into an isolated preview session, perform
+no network requests, and deduplicate package IDs against curated entries. They
+reject a package repeated through both an ID and a packageId entry. Additional app
+metadata never modifies the active session until import confirmation.
+
+Catalog-only selections continue to export version 1. The selection fingerprint
+uses the same ID/package-ID representation and excludes unselected discoveries,
+origin labels and the last run. Loading a version 2 package that has since become
+a bundled app reuses the bundled entry.
 
 Exports write UTF-8 JSON to a temporary sibling file, then move/replace it. Existing
 files require explicit overwrite. A failed save leaves the session unsaved and
@@ -107,6 +132,31 @@ is the fallback if Documents is unavailable). Users can choose any local path an
 copy the exported file to another laptop. No automatic saves or cloud sync.
 
 ## Windows adapter
+
+### App discovery
+
+The App installs menu lists categories, local search, all local apps and live
+WinGet search. Local app lists show eight items per page and retain selection
+while paging or changing filters. Select/clear applies to the visible page;
+invalid batch input changes nothing. Package details stay available in compact
+terminal views. Queue review uses the existing combined settings/apps plan.
+
+`Find-WuWinGetPackage` runs `winget search --query <query> --count 40 --source winget
+--disable-interactivity`. `Get-WuWinGetPackageDetails` uses `show --id <id> --exact`
+with that same source. Both return native output, exit code and a status that
+distinguishes results, no match, required source agreements and failure.
+`--accept-source-agreements` is passed only after the corresponding UI consent.
+Preview mode never performs live searches or accepts source terms.
+
+Search tables are displayed as text instead of parsed: their columns can be
+localized, truncated or affected by Unicode widths. The user supplies up to 20
+complete package IDs per batch. Every ID is syntax-checked, resolved exactly and
+its native metadata displayed before the UI offers to add the batch. Failed or
+cancelled verification never partly adds a batch. No apps install until the
+separate apply confirmation. The package validator supports plus signs such as
+`Notepad++.Notepad++`, while refusing argument/path/control-character syntax.
+
+### Readiness and execution
 
 `Get-WuReadiness` returns OS edition/build, architecture, PowerShell/WinGet version,
 pending-reboot and battery information, identity, and probe warnings. CIM
@@ -243,7 +293,10 @@ Repair tests fake the OS and tools while exercising real report persistence and
 failure/stop decisions. Additional child-process tests verify UTF-16 output,
 argument boundaries, pipe draining after output failure, and mutex exclusion.
 Terminal scenarios exercise repair previews, cancellation, confirmation, elevation
-and reports. Actual Windows repair commands are never executed by this suite.
+and reports, as well as app batches, pagination, discovery and search failures.
+Core tests cover version 1/2 saved setups, package deduplication and isolated
+imports; Windows tests verify discovery arguments and queue behavior with added
+apps. Actual installations and Windows repair commands are never executed by this suite.
 The GitHub Actions workflow runs the suite on Windows with `powershell` (5.1) and
 `pwsh` (7). Linux tests do not establish real WinGet/Explorer correctness on Windows
 11 or establish real DISM/SFC/CHKDSK behavior. Run the disposable-VM acceptance

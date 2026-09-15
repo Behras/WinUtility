@@ -9,6 +9,7 @@ $script:WuWidthOverride = 0
 $script:WuHeightOverride = 0
 $script:WuPreviewOnly = $true
 $script:WuEnvironment = $null
+$script:WuAcceptSourceAgreements = $false
 $script:WuColors = @{ Normal = 'Gray'; Title = 'White'; Accent = 'Cyan'; Muted = 'DarkGray'; Success = 'Green'; Warning = 'Yellow' }
 
 function Initialize-WuAppearance {
@@ -230,6 +231,7 @@ function Show-WuPresets {
 
 function Show-WuItemPicker {
     param($Session, [AllowEmptyCollection()][object[]]$Items, [string]$Title)
+    if ($Items.Count -eq 0 -or $Items[0].kind -eq 'App') { Show-WuAppPicker -Session $Session -Items $Items -Title $Title; return }
     while ($true) {
         Write-WuHeading $Title 'Enter a number to toggle. [x] selected / [ ] not selected.'
         if ($Items.Count -eq 0) { Write-WuText -Text 'No matching apps.' -Tone Warning }
@@ -265,11 +267,11 @@ function Show-WuItemPicker {
 
 function Show-WuCategories {
     param($Session, [ValidateSet('Settings', 'Apps')][string]$Kind)
+    if ($Kind -eq 'Apps') { Show-WuAppCatalog -Session $Session; return }
     $items = @($Session.Catalog.$Kind)
     $categories = @($items | Select-Object -ExpandProperty category -Unique)
     while ($true) {
         $title = 'Manual changes'
-        if ($Kind -eq 'Apps') { $title = 'App installs | WinGet catalog' }
         Write-WuHeading $title '02 / Fine-tune your laptop setup.'
         $options = @('0')
         for ($i = 0; $i -lt $categories.Count; $i++) {
@@ -282,25 +284,180 @@ function Show-WuCategories {
             Write-WuOption -Key $number -Label $category -Description "[$bar]  $selected/$($group.Count) selected"
             Write-WuText
         }
-        if ($Kind -eq 'Apps') {
-            Write-WuOption -Key 'S' -Label 'Search apps by name' -Tone Accent
-            $options += 'S'
-        }
         Write-WuFooter
         $choice = Read-WuChoice $options
         if ($choice -eq '0') { return }
-        if ($choice -eq 'S') {
-            $query = Read-WuInput 'Search name (Enter to cancel)'
-            if ($query.Length -eq 0) { continue }
-            # Literal substring search: characters like [ and * are not patterns.
-            $matches = @($items | Where-Object { $_.name.IndexOf($query, [StringComparison]::OrdinalIgnoreCase) -ge 0 })
-            Show-WuItemPicker -Session $Session -Items $matches -Title "App search: $query"
+        $category = $categories[[int]$choice - 1]
+        $group = @($items | Where-Object { $_.category -eq $category })
+        Show-WuItemPicker -Session $Session -Items $group -Title $category
+    }
+}
+
+function Show-WuAppPicker {
+    param($Session, [AllowEmptyCollection()][object[]]$Items, [string]$Title)
+    $page = 0; $pageSize = 8
+    while ($true) {
+        $first = $page * $pageSize
+        $last = [Math]::Min($Items.Count, $first + $pageSize)
+        $pageCount = [Math]::Max(1, [int][Math]::Ceiling($Items.Count / [double]$pageSize))
+        Write-WuHeading $Title "Page $($page + 1) / $pageCount | [x] selected / [ ] not selected"
+        if ($Items.Count -eq 0) { Write-WuText -Text 'No matching apps.' -Tone Warning }
+        for ($i = $first; $i -lt $last; $i++) {
+            $item = $Items[$i]; $mark = ' '; $tone = 'Title'
+            if ($Session.Selected.ContainsKey($item.id)) { $mark = 'x'; $tone = 'Success' }
+            $description = ''
+            if (-not (Test-WuCompactDisplay)) { $description = $item.description }
+            Write-WuOption -Key ($i + 1).ToString() -Label "[$mark] $($item.name)" -Description $description -Tone $tone
+            if (-not (Test-WuCompactDisplay)) { Write-WuText -Text "WinGet: $($item.packageId)" -Tone Muted -Indent 7 }
         }
-        else {
-            $category = $categories[[int]$choice - 1]
+        $selectedHere = @($Items | Where-Object { $Session.Selected.ContainsKey($_.id) }).Count
+        $selectedTotal = @(Get-WuAppItems $Session | Where-Object { $Session.Selected.ContainsKey($_.id) }).Count
+        Write-WuText -Text "$selectedHere/$($Items.Count) selected in this list | $selectedTotal apps in queue" -Tone Accent
+        if ($Items.Count -gt 0) {
+            $example = ($first + 1).ToString()
+            if (($last - $first) -ge 7) { $example = "$($first + 1),$($first + 3),$($first + 5)-$($first + 7)" }
+            elseif (($last - $first) -ge 3) { $example = "$($first + 1),$($first + 2)-$($first + 3)" }
+            elseif (($last - $first) -eq 2) { $example = "$($first + 1),$($first + 2)" }
+            Write-WuText -Text "Toggle: $example | A select page | C clear page" -Tone Muted
+            Write-WuText -Text 'D <number> details | R review queue' -Tone Muted
+        }
+        if ($pageCount -gt 1) { Write-WuText -Text 'N next page | P previous page' -Tone Accent }
+        Write-WuFooter
+        $choice = Read-WuInput '  Choose'
+        if ($choice -eq '0') { return }
+        if ($choice -ieq 'R') { Show-WuReview -Session $Session; continue }
+        if ($choice -ieq 'N' -and $page -lt ($pageCount - 1)) { $page++; continue }
+        if ($choice -ieq 'P' -and $page -gt 0) { $page--; continue }
+        if ($Items.Count -eq 0) { Write-WuText -Text 'Enter 0 to go back.' -Tone Warning; continue }
+        if ($choice -ieq 'A' -or $choice -ieq 'C') {
+            for ($i = $first; $i -lt $last; $i++) {
+                if ($choice -ieq 'A') { Set-WuSelection -Session $Session -Id $Items[$i].id }
+                else { Remove-WuSelection -Session $Session -Id $Items[$i].id }
+            }
+            continue
+        }
+        try {
+            if ($choice -match '^D\s*([0-9]+)$') {
+                $detail = @(ConvertFrom-WuBatchInput -Text $Matches[1] -First ($first + 1) -Last $last)
+                $item = $Items[$detail[0] - 1]
+                Write-WuHeading $item.name $item.category
+                Write-WuText -Text $item.description
+                Write-WuText -Text "WinGet: $($item.packageId) | Source: winget" -Tone Accent
+                Write-WuText -Text 'Selecting adds this app to the queue. Review and confirm to install it.' -Tone Muted
+                Wait-WuContinue; continue
+            }
+            $numbers = @(ConvertFrom-WuBatchInput -Text $choice -First ($first + 1) -Last $last)
+            foreach ($number in $numbers) {
+                $item = $Items[$number - 1]
+                if ($Session.Selected.ContainsKey($item.id)) { Remove-WuSelection -Session $Session -Id $item.id }
+                else { Set-WuSelection -Session $Session -Id $item.id }
+            }
+        }
+        catch { Write-WuText -Text $_.Exception.Message -Tone Warning }
+    }
+}
+
+function Show-WuAppCatalog {
+    param($Session)
+    while ($true) {
+        $items = @(Get-WuAppItems $Session)
+        $categories = @($items | Select-Object -ExpandProperty category -Unique)
+        $selectedCount = @($items | Where-Object { $Session.Selected.ContainsKey($_.id) }).Count
+        Write-WuHeading 'App installs | WinGet catalog' "$($items.Count) apps | $selectedCount selected | Choose several, then review"
+        $options = @('0', 'S', 'B', 'W', 'R')
+        for ($i = 0; $i -lt $categories.Count; $i++) {
+            $category = $categories[$i]
             $group = @($items | Where-Object { $_.category -eq $category })
-            Show-WuItemPicker -Session $Session -Items $group -Title $category
+            $selected = @($group | Where-Object { $Session.Selected.ContainsKey($_.id) }).Count
+            $number = ($i + 1).ToString(); $options += $number
+            Write-WuOption -Key $number -Label "$category ($selected/$($group.Count))"
         }
+        Write-WuOption -Key 'S' -Label 'Search catalog: name, purpose or package ID' -Tone Accent
+        Write-WuOption -Key 'B' -Label 'Browse all catalog apps'
+        Write-WuOption -Key 'W' -Label 'Search live WinGet (Windows)' -Tone Accent
+        Write-WuOption -Key 'R' -Label "Review queue ($selectedCount apps)"
+        Write-WuFooter
+        $choice = Read-WuChoice $options
+        if ($choice -eq '0') { return }
+        if ($choice -eq 'R') { Show-WuReview -Session $Session; continue }
+        if ($choice -eq 'W') { Show-WuLiveAppSearch -Session $Session; continue }
+        if ($choice -eq 'B') { Show-WuAppPicker -Session $Session -Items $items -Title 'All apps'; continue }
+        if ($choice -eq 'S') {
+            $query = Read-WuInput '  Search catalog (Enter to cancel)'
+            if ($query.Length -eq 0) { continue }
+            $matches = @(Find-WuCatalogApp -Session $Session -Query $query)
+            Show-WuAppPicker -Session $Session -Items $matches -Title "App search: $query"
+            continue
+        }
+        $group = @($items | Where-Object { $_.category -eq $categories[[int]$choice - 1] })
+        Show-WuAppPicker -Session $Session -Items $group -Title $categories[[int]$choice - 1]
+    }
+}
+
+function Write-WuPackageOutput {
+    param([string]$Text)
+    foreach ($line in ($Text -split '[\r\n]+')) {
+        # Native output is display text, never parsed into executable package selections.
+        Write-WuText -Text ($line -replace '\x1b\[[0-?]*[ -/]*[@-~]', '')
+    }
+}
+
+function Get-WuInteractivePackageLookup {
+    param([ValidateSet('search', 'show')][string]$Operation, [string]$Value)
+    while ($true) {
+        if ($Operation -eq 'search') { $result = Find-WuWinGetPackage -Query $Value -AcceptSourceAgreements:$script:WuAcceptSourceAgreements }
+        else { $result = Get-WuWinGetPackageDetails -PackageId $Value -AcceptSourceAgreements:$script:WuAcceptSourceAgreements }
+        if ($result.Status -ne 'SourceAgreementRequired' -or $script:WuAcceptSourceAgreements) { return $result }
+        Write-WuPackageOutput $result.Output
+        if (-not (Confirm-WuChoice 'WinGet requires its source agreements before searching. Accept the displayed source terms?' 'Accept source terms and retry')) { return $null }
+        $script:WuAcceptSourceAgreements = $true
+    }
+}
+
+function Show-WuLiveAppSearch {
+    param($Session)
+    if ($script:WuPreviewOnly) {
+        Write-WuText -Text 'Live WinGet search requires Windows mode with WinGet available.' -Tone Warning
+        Write-WuText -Text 'Bundled catalog search works in this preview.' -Tone Muted
+        Wait-WuContinue; return
+    }
+    while ($true) {
+        Write-WuHeading 'Search live WinGet' 'Search the winget source; selecting packages does not install them.'
+        $query = Read-WuInput '  Search WinGet (Enter to go back)'
+        if ($query.Length -eq 0) { return }
+        try {
+            $result = Get-WuInteractivePackageLookup -Operation search -Value $query
+            if ($null -eq $result) { continue }
+            Write-WuPackageOutput $result.Output
+            if ($result.Status -eq 'NotFound') { Write-WuText -Text 'No WinGet packages matched. Try another search.' -Tone Muted; continue }
+            if ($result.Status -ne 'Found') { throw "WinGet search failed with exit code $($result.ExitCode). Read its output above." }
+            Write-WuText -Text 'Showing up to 40 results. Refine the search if an ID is truncated. Use exact IDs, including their capitalization.' -Tone Muted
+            Write-WuText -Text 'Enter several IDs separated by commas or spaces, e.g. Vendor.One, Vendor.Two.' -Tone Accent
+            $inputText = Read-WuInput '  Package IDs to add (Enter for another search, 0 to go back)'
+            if ($inputText -eq '0') { return }
+            if ($inputText.Length -eq 0) { continue }
+            $packageIds = @($inputText -split '[,\s]+' | Select-Object -Unique)
+            if ($packageIds.Count -gt 20) { throw 'Add up to 20 package IDs in one batch.' }
+            foreach ($packageId in $packageIds) {
+                if (-not (Test-WuPackageId $packageId)) { throw "Invalid package ID '$packageId'. Use an exact ID from the WinGet result." }
+            }
+            # Resolve every ID exactly and show its publisher/installer metadata before adding any.
+            # Avoid parsing localized, width-truncated search tables into package identities.
+            $verified = $true
+            foreach ($packageId in $packageIds) {
+                Write-WuHeading "Package details | $packageId"
+                $details = Get-WuInteractivePackageLookup -Operation show -Value $packageId
+                if ($null -eq $details) { $verified = $false; break }
+                Write-WuPackageOutput $details.Output
+                if ($details.Status -ne 'Found') { $verified = $false; Write-WuText -Text "Could not verify '$packageId' (exit $($details.ExitCode))." -Tone Warning }
+            }
+            if (-not $verified) { Write-WuText -Text 'No apps from this batch were added. Correct the IDs or resolve the WinGet error and try again.' -Tone Warning; continue }
+            if (Confirm-WuChoice "Add these $($packageIds.Count) packages to your queue? Installation has a separate review and confirmation." 'Add to queue') {
+                Add-WuWinGetSelection -Session $Session -PackageIds $packageIds
+                Write-WuText -Text 'Packages are selected. Repeated choices stay in the queue once. Use Review queue to install them.' -Tone Success
+            }
+        }
+        catch { Write-WuText -Text $_.Exception.Message -Tone Warning }
     }
 }
 
@@ -690,6 +847,7 @@ function Start-WuTerminal {
     param([Parameter(Mandatory)]$Session, [Parameter(Mandatory)]$Environment, [switch]$Plain, [switch]$Preview, [switch]$Repair)
     Initialize-WuAppearance -Plain:$Plain
     $script:WuEnvironment = $Environment
+    $script:WuAcceptSourceAgreements = $false
     $script:WuPreviewOnly = $Preview -or -not $Environment.SupportedOS
     if ($Repair) { Show-WuRepairMenu; return }
     while ($true) {

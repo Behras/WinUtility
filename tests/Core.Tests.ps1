@@ -124,7 +124,7 @@ Test-Case 'Invalid imports are rejected completely without altering active selec
     $invalid = @(
         '{',
         'null',
-        '{"schemaVersion":2,"selections":[]}',
+        '{"schemaVersion":3,"selections":[]}',
         '{"schemaVersion":"1","selections":[]}',
         '{"schemaVersion":1,"selections":{}}',
         '{"schemaVersion":1,"selections":[{"id":"unknown","value":"installed"}]}',
@@ -148,16 +148,21 @@ Test-Case 'Invalid imports are rejected completely without altering active selec
     }
 }
 
-Test-Case 'Catalogs reject duplicate IDs, unknown preset references, and invalid metadata' {
+Test-Case 'Catalogs reject duplicate IDs, duplicate packages, unknown preset references, and invalid metadata' {
     $fixture = Join-Path $script:TestRoot 'catalog'
     [void][IO.Directory]::CreateDirectory($fixture)
     $source = Join-Path $script:RepoRoot 'data'
-    foreach ($scenario in @('duplicate', 'unknown', 'metadata')) {
+    foreach ($scenario in @('duplicate', 'package', 'unknown', 'metadata')) {
         Get-ChildItem -LiteralPath $source -File | Copy-Item -Destination $fixture
         if ($scenario -eq 'unknown') {
             $path = Join-Path $fixture 'presets.json'
             $document = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
             $document.items[0].itemIds += 'missing.id'
+        }
+        elseif ($scenario -eq 'package') {
+            $path = Join-Path $fixture 'apps.json'
+            $document = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+            $document.items[1].packageId = $document.items[0].packageId.ToUpperInvariant()
         }
         else {
             $path = Join-Path $fixture 'settings.json'
@@ -167,5 +172,105 @@ Test-Case 'Catalogs reject duplicate IDs, unknown preset references, and invalid
         }
         [IO.File]::WriteAllText($path, (ConvertTo-Json -InputObject $document -Depth 10))
         Assert-Throws { Get-WuCatalog -DataPath $fixture }
+    }
+}
+
+Test-Case 'Batch selection accepts lists and ranges once and rejects invalid batches before yielding numbers' {
+    Assert-Equal @(1, 3, 5, 6, 7) @(ConvertFrom-WuBatchInput -Text '1,3 5-7,6' -First 1 -Last 8)
+    Assert-Equal @(9, 10, 11) @(ConvertFrom-WuBatchInput -Text '9-11,10' -First 9 -Last 16)
+    foreach ($text in @('', '1,9', '0,1', '3-1', '-1', '1-99', '99999999999', '1;2', 'all', '1,')) {
+        $output = New-Object Collections.ArrayList
+        Assert-Throws { ConvertFrom-WuBatchInput -Text $text -First 1 -Last 8 | ForEach-Object { [void]$output.Add($_) } }
+        Assert-Equal 0 $output.Count
+    }
+}
+
+Test-Case 'Catalog search matches names, descriptions, categories and package IDs as literal text' {
+    $session = New-WuSession $script:Catalog
+    Assert-Equal @('app.7zip') @(Find-WuCatalogApp $session 'ARCHIVE' | ForEach-Object { $_.id })
+    Assert-Equal @('app.notepadplusplus') @(Find-WuCatalogApp $session 'Notepad++.Notepad++' | ForEach-Object { $_.id })
+    Assert-True (@(Find-WuCatalogApp $session 'PDF').Count -ge 2)
+    Assert-True (@(Find-WuCatalogApp $session 'Diagnostics').Count -ge 3)
+    Assert-Equal 0 @(Find-WuCatalogApp $session '[*]').Count
+    Assert-Equal 0 $session.Selected.Count
+}
+
+Test-Case 'WinGet selections deduplicate package identities and stay isolated from other sessions' {
+    $session = New-WuSession $script:Catalog
+    $other = New-WuSession $script:Catalog
+    $originalCount = $script:Catalog.Apps.Count
+    Add-WuWinGetSelection $session @('Vendor.Tool', '7zip.7zip', 'vendor.tool', 'Vendor.Other')
+    Assert-Equal 3 $session.Selected.Count
+    Assert-Equal 2 $session.AdditionalApps.Count
+    Assert-Equal $originalCount @(Get-WuAppItems $other).Count
+    Assert-Equal $originalCount $script:Catalog.Apps.Count
+    Assert-True $session.Selected.ContainsKey('app.7zip')
+    $before = @(Get-WuPlan $session | ForEach-Object { $_.PackageId })
+    Assert-Throws { Add-WuWinGetSelection $session @('Vendor.New', 'bad;command') }
+    Assert-Equal $before @(Get-WuPlan $session | ForEach-Object { $_.PackageId })
+    Assert-True (Test-WuUnsavedChanges $session)
+}
+
+Test-Case 'Live WinGet selections round trip offline in schema 2 with stable identity and saved state' {
+    foreach ($ids in @(@('Vendor.One++'), @('Vendor.One++', 'Vendor.Two', '7zip.7zip'))) {
+        $session = New-WuSession $script:Catalog
+        Add-WuWinGetSelection $session $ids
+        Set-WuSelection $session 'explorer.extensions'
+        $path = Join-Path $script:TestRoot ('winget-' + $ids.Count + '.json')
+        [void](Export-WuSetup $session $path)
+        $saved = [IO.File]::ReadAllText($path) | ConvertFrom-Json
+        Assert-Equal 2 $saved.schemaVersion
+        Assert-True ($saved.selections -is [array])
+        Assert-Equal 0 @($saved.selections | Where-Object { $_.PSObject.Properties.Name -contains 'command' }).Count
+        $preview = Import-WuSetup $script:Catalog $path
+        Assert-True (-not (Test-WuUnsavedChanges $preview))
+        $target = New-WuSession $script:Catalog
+        Set-WuImportedSetup $target $preview
+        Assert-Equal @(Get-WuPlan $session | ForEach-Object { $_.Id }) @(Get-WuPlan $target | ForEach-Object { $_.Id })
+        $id = @($target.AdditionalApps.Keys)[0]
+        Remove-WuSelection $target $id
+        Assert-True (Test-WuUnsavedChanges $target)
+        Set-WuSelection $target $id
+        Assert-True (-not (Test-WuUnsavedChanges $target))
+        Clear-WuSelection $preview
+        Assert-Equal ($ids.Count + 1) $target.Selected.Count
+    }
+}
+
+Test-Case 'Saved package IDs reuse curated entries and catalog-only exports retain schema 1' {
+    $path = Join-Path $script:TestRoot 'known-package.json'
+    [IO.File]::WriteAllText($path, '{"schemaVersion":2,"selections":[{"packageId":"7zip.7zip","value":"installed"}]}')
+    $session = Import-WuSetup $script:Catalog $path
+    Assert-Equal @('app.7zip') @($session.Selected.Keys)
+    Assert-Equal 0 $session.AdditionalApps.Count
+    [void](Export-WuSetup $session $path -Overwrite)
+    Assert-Equal 1 ([IO.File]::ReadAllText($path) | ConvertFrom-Json).schemaVersion
+    Add-WuWinGetSelection $session @('Vendor.Tool')
+    Set-WuPreset $session minimal
+    Assert-Equal 3 $session.Selected.Count
+    Assert-Equal 0 @(Get-WuPlan $session | Where-Object { $_.PackageId -eq 'Vendor.Tool' }).Count
+}
+
+Test-Case 'Schema 2 rejects executable fields, unsupported sources, invalid values and duplicate packages atomically' {
+    $invalid = @(
+        '{"schemaVersion":1,"selections":[{"packageId":"Vendor.Tool","value":"installed"}]}',
+        '{"schemaVersion":2,"selections":[{"packageId":"Vendor.Tool","value":"installed","source":"other"}]}',
+        '{"schemaVersion":2,"selections":[{"packageId":"Vendor.Tool","value":"installed","command":"anything"}]}',
+        '{"schemaVersion":2,"selections":[{"packageId":"Vendor.Tool","value":["installed"]}]}',
+        '{"schemaVersion":2,"selections":[{"packageId":"Vendor.Tool","value":"uninstalled"}]}',
+        '{"schemaVersion":2,"selections":[{"packageId":"--force","value":"installed"}]}',
+        '{"schemaVersion":2,"selections":[{"packageId":"Vendor.Tool\n","value":"installed"}]}',
+        '{"schemaVersion":2,"selections":[{"packageId":"Vendor.Tool","value":"installed"},{"packageId":"vendor.tool","value":"installed"}]}',
+        '{"schemaVersion":2,"selections":[{"id":"app.7zip","value":"installed"},{"packageId":"7zip.7zip","value":"installed"}]}',
+        '{"schemaVersion":2,"selections":[{"id":"app.7zip","packageId":"Vendor.Other","value":"installed"}]}'
+    )
+    $path = Join-Path $script:TestRoot 'bad-live-setup.json'
+    $active = New-WuSession $script:Catalog
+    Add-WuWinGetSelection $active @('Vendor.Existing')
+    foreach ($content in $invalid) {
+        [IO.File]::WriteAllText($path, $content)
+        Assert-Throws { Import-WuSetup $script:Catalog $path }
+        Assert-Equal 1 $active.AdditionalApps.Count
+        Assert-Equal @('Vendor.Existing') @(Get-WuPlan $active | ForEach-Object { $_.PackageId })
     }
 }

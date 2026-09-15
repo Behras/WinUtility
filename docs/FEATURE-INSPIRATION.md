@@ -1,8 +1,10 @@
 # Feature inspiration for WinUtility
 
 Reviewed on **2026-09-15**. This is the original research backlog. The first working
-foundation now covers readiness, WinGet installs, and two reversible Explorer
-settings; the remaining ideas are future work. Priorities below target this
+foundation now covers readiness, WinGet installs, two reversible Explorer
+settings, and the repair submenu. App browsing now includes 48 curated apps,
+categories, batch selection, local search and live WinGet search. Remaining ideas
+below are future work. Priorities target this
 project's use case: repeatedly setting up freshly installed Windows laptops.
 
 ## Repositories reviewed
@@ -32,8 +34,9 @@ through their GitHub documentation. No reference utility was executed.
 | **Change history and supported undo** | Record each action and its actual previous value. Offer undo only where the handler can restore that value. List actions that cannot be undone. | Sophia's opposing setting functions are useful inspiration. Restoring a Windows default and restoring a person's previous value are different operations; our history should distinguish them. |
 
 **Foundation implemented:** machine readiness, a real WinGet queue, and two
-reversible Explorer settings, with reporting and failure tests. Real Windows 11
-smoke validation is still required; expand the catalog after that validation.
+reversible Explorer settings, with reporting and failure tests. Repair workflows
+and expanded app discovery are also implemented. Real Windows 11 smoke validation
+is still required before release.
 
 ### 2. Make repeated laptop setups convenient
 
@@ -60,9 +63,10 @@ smoke validation is still required; expand the catalog after that validation.
 
 ## How the menu should grow
 
-Keep the current five entries while the real execution foundation is small.
+The current six main entries cover presets, manual changes, app installs, review,
+saved setups and repair.
 Put readiness information above the menu, cleanup inside **Manual changes**, and
-app packs/updates inside **App installs**. **History & Explorer undo** is now
+future app packs/updates inside **App installs**. **History & Explorer undo** is now
 available for supported Windows runs. Avoid empty future-feature menus.
 
 For the next real presets, preserve security updates and the normal Windows

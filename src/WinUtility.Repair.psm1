@@ -23,12 +23,12 @@ function Get-WuRepairCatalog {
 
 function Get-WuRepairPlan {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$Id, [ValidatePattern('^[A-Za-z]:$')][string]$SystemDrive = 'C:',
+    param([Parameter(Mandatory)][string]$Id, [ValidatePattern('\A[A-Za-z]:\z')][string]$SystemDrive = 'C:',
         [string]$SourcePath, [int]$SourceIndex = 0)
     if (@(Get-WuRepairCatalog | Where-Object { $_.Id -ceq $Id }).Count -ne 1) { throw 'Unknown repair action.' }
     if ($Id -in @('source.info', 'dism.source')) {
         # Restrict this first source-repair UI to a local/attached WIM, not command text or a URL.
-        if ($SourcePath -notmatch '^[A-Za-z]:\\[^"\x00-\x1f]+\.wim$' -or $SourcePath.Substring(2).Contains(':')) {
+        if ($SourcePath -notmatch '\A[A-Za-z]:\\[^"\x00-\x1f]+\.wim\z' -or $SourcePath.Substring(2).Contains(':')) {
             throw 'Choose an absolute local path to a .wim file, for example E:\sources\install.wim.'
         }
         if ($Id -eq 'dism.source' -and $SourceIndex -lt 1) { throw 'A positive WIM image index is required.' }
@@ -39,7 +39,7 @@ function Get-WuRepairPlan {
         $definition = Get-WuRepairCatalog | Where-Object { $_.Id -ceq $stepId }
         $step = [pscustomobject]@{
             Id = $stepId; Name = $definition.Name; Description = $definition.Description
-            Tool = ''; Arguments = @(); Disk = $false; Interactive = $false; NeedsFreshRestart = $false
+            Tool = ''; Arguments = @(); CommandLine = ''; Disk = $false; Interactive = $false; NeedsFreshRestart = $false
         }
         switch ($stepId) {
             'dism.check' { $step.Arguments = @('/Online', '/Cleanup-Image', '/CheckHealth') }
@@ -58,6 +58,7 @@ function Get-WuRepairPlan {
         }
         if ($stepId.StartsWith('disk.')) { $step.Tool = 'chkdsk.exe'; $step.Disk = $true }
         elseif ($step.Tool.Length -eq 0) { $step.Tool = 'dism.exe'; $step.Arguments += @('/NoRestart', '/English') }
+        $step.CommandLine = $step.Tool + ' ' + (ConvertTo-WuNativeArguments $step.Arguments)
         $step
     }
 }
@@ -73,7 +74,7 @@ function Get-WuRepairEnvironment {
     if (-not $readiness.SupportedOS) { return $context }
     $context.WindowsDirectory = [Environment]::GetFolderPath('Windows')
     $context.SystemDrive = [IO.Path]::GetPathRoot($context.WindowsDirectory).TrimEnd('\')
-    if ($context.SystemDrive -notmatch '^[A-Za-z]:$') { throw 'The Windows system drive could not be verified.' }
+    if ($context.SystemDrive -notmatch '\A[A-Za-z]:\z') { throw 'The Windows system drive could not be verified.' }
     # A 32-bit host must reach the native system tools on 64-bit Windows.
     $systemFolder = 'System32'
     if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) { $systemFolder = 'Sysnative' }
@@ -103,9 +104,13 @@ function Get-WuRepairBlockers {
 function ConvertTo-WuNativeArguments {
     param([string[]]$Arguments)
     # ProcessStartInfo.ArgumentList is unavailable in Windows PowerShell 5.1.
-    # Quote each Windows argv element, escaping backslashes before quotes/end.
-    return (@($Arguments | ForEach-Object {
-        '"' + [regex]::Replace([regex]::Replace($_, '(\\*)"', '$1$1\"'), '(\\+)$', '$1$1') + '"'
+    # CHKDSK rejects quoted switches. Leave simple arguments bare; no shell is involved.
+    # Keep DISM's /Option: prefix outside quotes and quote only its value when needed.
+    return (@(foreach ($argument in $Arguments) {
+        if (-not [string]::IsNullOrEmpty($argument) -and $argument -notmatch '[\s"]') { $argument; continue }
+        $prefix = ''; $value = [string]$argument
+        if ($value -match '\A(/[A-Za-z]+:)(.+)\z') { $prefix = $Matches[1]; $value = $Matches[2] }
+        $prefix + '"' + [regex]::Replace([regex]::Replace($value, '(\\*)"', '$1$1\"'), '(\\+)$', '$1$1') + '"'
     }) -join ' ')
 }
 
@@ -203,6 +208,10 @@ function Set-WuRepairResult {
         }
         elseif ($ExitCode -eq 0) { $Record.Message = 'CHKDSK reported no file-system errors.' }
         elseif ($ExitCode -eq 1) { $Record.Message = 'CHKDSK reported that file-system errors were fixed.' }
+        elseif ($ExitCode -eq 3) {
+            $Record.Status = 'NeedsAttention'
+            $Record.Message = 'CHKDSK could not check the disk or left errors unresolved (exit 3). This code alone does not identify the cause. Read the command output before deciding whether a boot-time /f check is needed.'
+        }
         else {
             $Record.Status = 'NeedsAttention'
             $Record.Message = "CHKDSK exit code ${ExitCode}: the scan did not establish a clean/repaired volume. Review its output and consider Advanced > CHKDSK /f before further repairs."
@@ -225,6 +234,10 @@ function Set-WuRepairResult {
         if ($hex -in @('800F081F', '800F0906', '800F0907')) {
             $Record.Message += ' Check the repair source, network/policy, or use Advanced > Repair from local WIM with matching Windows media.'
         }
+        elseif ($ExitCode -eq 87) { $Record.Message += ' DISM rejected a command parameter. Check the command and its output before retrying.' }
+    }
+    elseif ($Record.Id -eq 'dism.check') {
+        $Record.Message = 'Quick check finished: CheckHealth reads recorded corruption and can finish immediately. Read the DISM summary for its diagnosis; choose Scan image health for a fresh scan.'
     }
 }
 
@@ -290,6 +303,7 @@ function Invoke-WuRepair {
         foreach ($step in $plan) {
             $report.Steps += [pscustomobject][ordered]@{
                 Id = $step.Id; Name = $step.Name; Tool = $step.Tool; Arguments = $step.Arguments
+                CommandLine = $step.CommandLine; ExecutablePath = (Join-Path $environment.SystemDirectory $step.Tool)
                 Status = 'NotRun'; Message = 'Not started.'; ExitCode = $null; RestartRequired = $false
                 StartedAtUtc = $null; DurationSeconds = $null; LogFile = ($step.Id + '.log')
             }
@@ -309,9 +323,9 @@ function Invoke-WuRepair {
             }
             $record.Status = 'Running'; $record.StartedAtUtc = [DateTime]::UtcNow.ToString('o')
             Save-WuRepairReport $report $path
-            if ($null -ne $OnProgress) { & $OnProgress $step.Name ($i + 1) $plan.Count | Out-Null }
             $timer = [Diagnostics.Stopwatch]::StartNew()
             try {
+                if ($null -ne $OnProgress) { & $OnProgress $step.Name ($i + 1) $plan.Count | Out-Null }
                 $native = Invoke-WuRepairProcess -FilePath (Join-Path $environment.SystemDirectory $step.Tool) -Arguments $step.Arguments -LogPath (Join-Path $directory $record.LogFile) -UnicodeOutput:($step.Tool -eq 'sfc.exe') -Interactive:$step.Interactive
                 Set-WuRepairResult $record $native.ExitCode
             }
@@ -345,10 +359,11 @@ function Get-WuRepairHistory {
             # Recent PowerShell versions deserialize ISO timestamps to DateTime; 5.1 keeps strings.
             if ($report.StartedAtUtc -is [datetime]) { $report.StartedAtUtc = $report.StartedAtUtc.ToUniversalTime().ToString('o') }
             foreach ($step in $report.Steps) {
-                if ($step.LogFile -cnotmatch '^[a-z]+\.[a-z]+\.log$') { throw 'Invalid repair log name.' }
-                foreach ($field in @('Name', 'Status', 'Message', 'ExitCode', 'DurationSeconds')) {
+                if ($step.LogFile -cnotmatch '\A[a-z]+\.[a-z]+\.log\z') { throw 'Invalid repair log name.' }
+                foreach ($field in @('Id', 'Name', 'Status', 'Message', 'ExitCode', 'DurationSeconds')) {
                     if ($step.PSObject.Properties.Name -notcontains $field) { throw 'Incomplete repair step.' }
                 }
+                if ($step.PSObject.Properties.Name -contains 'CommandLine' -and $step.CommandLine -isnot [string]) { throw 'Invalid repair command description.' }
             }
             [pscustomobject]@{ Path = $path; Report = $report; Error = $null }
         }

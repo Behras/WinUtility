@@ -108,6 +108,47 @@ Test-Case 'An unresolved disk scan stops full repair before servicing while repa
     }
 }
 
+Test-Case 'Immediate CHKDSK exit 3 preserves its command and output without assuming disk damage' {
+    Invoke-RepairFixture {
+        param($fake)
+        $fake.Codes['disk.scan'] = 3
+        $run = Invoke-WuRepair full -Confirmed
+        Assert-Equal @('disk.scan') @($fake.Calls.Id)
+        Assert-Equal 'Stopped' $run.Report.Status
+        Assert-Equal 3 $run.Report.Steps[0].ExitCode
+        Assert-Equal 'chkdsk.exe W: /scan' $run.Report.Steps[0].CommandLine
+        Assert-True ($run.Report.Steps[0].Message.Contains('could not check the disk'))
+        Assert-True ($run.Report.Steps[0].Message.Contains('does not identify the cause'))
+        $saved = Get-WuRepairHistory
+        Assert-Equal $null $saved.Error
+        Assert-Equal $run.Report.Steps[0].CommandLine $saved.Report.Steps[0].CommandLine
+        Assert-True ([IO.File]::ReadAllText((Join-Path (Split-Path $run.Path -Parent) 'disk.scan.log')).Contains('Fixture output'))
+    }
+}
+
+Test-Case 'Quick DISM checks explain that successful immediate completion is not a full scan' {
+    Invoke-RepairFixture {
+        param($fake)
+        $run = Invoke-WuRepair dism.check -Confirmed
+        Assert-Equal @('dism.check') @($fake.Calls.Id)
+        Assert-Equal 'Completed' $run.Report.Status
+        Assert-True ($run.Report.Steps[0].Message.Contains('recorded corruption'))
+        Assert-True ($run.Report.Steps[0].Message.Contains('Scan image health'))
+    }
+}
+
+Test-Case 'A failed repair progress callback is reported and stops before launching its command' {
+    Invoke-RepairFixture {
+        param($fake)
+        $run = Invoke-WuRepair full -Confirmed -OnProgress { throw 'Progress display failed (fixture).' }
+        Assert-Equal 0 $fake.Calls.Count
+        Assert-Equal 'Stopped' $run.Report.Status
+        Assert-Equal 'Failed' $run.Report.Steps[0].Status
+        Assert-True ($run.Report.Steps[0].Message.Contains('Progress display failed'))
+        Assert-Equal @('NotRun', 'NotRun', 'NotRun', 'NotRun') @($run.Report.Steps | Select-Object -Skip 1 | ForEach-Object { $_.Status })
+    }
+}
+
 Test-Case 'Failed DISM, missing repair sources, and restart exit codes stop subsequent SFC steps' {
     foreach ($code in @(87, -2146498529, 3010, 1641)) {
         Invoke-RepairFixture {
@@ -193,14 +234,29 @@ Test-Case 'Repair commands reject unknown IDs and malformed source arguments whi
         param($fake)
         Assert-Throws { Invoke-WuRepair 'dism.restore; whoami' -Confirmed } '*Unknown repair*'
         Assert-Throws { Get-WuRepairPlan disk.scan -SystemDrive 'C: /r' }
+        Assert-Throws { Get-WuRepairPlan disk.scan -SystemDrive "C:`n" }
         Assert-Throws { Get-WuRepairPlan dism.source -SourcePath 'E:\install.wim" /ResetBase' -SourceIndex 1 }
         Assert-Throws { Get-WuRepairPlan dism.source -SourcePath 'E:\install.wim:stream' -SourceIndex 1 }
+        Assert-Throws { Get-WuRepairPlan dism.source -SourcePath "E:\install.wim`n" -SourceIndex 1 }
         Assert-Throws { Get-WuRepairPlan dism.source -SourcePath 'E:\install.wim' -SourceIndex 0 } '*positive*'
         $plan = @(Get-WuRepairPlan dism.source -SourcePath 'E:\Windows media\install.wim' -SourceIndex 6)
         Assert-Equal @('/Online', '/Cleanup-Image', '/RestoreHealth', '/Source:WIM:E:\Windows media\install.wim:6', '/LimitAccess', '/NoRestart', '/English') $plan[0].Arguments
         $info = @(Get-WuRepairPlan source.info -SourcePath 'E:\install.wim')
         Assert-Equal @('/Get-WimInfo', '/WimFile:E:\install.wim', '/NoRestart', '/English') $info[0].Arguments
         Assert-Equal 0 $fake.Calls.Count
+    }
+}
+
+Test-Case 'Native repair syntax leaves switches bare and quotes only values that need it' {
+    Invoke-RepairFixture {
+        param($fake)
+        Assert-Equal 'chkdsk.exe C: /scan' (Get-WuRepairPlan disk.scan).CommandLine
+        Assert-Equal 'chkdsk.exe C: /f' (Get-WuRepairPlan disk.fix).CommandLine
+        Assert-Equal 'chkdsk.exe C: /r' (Get-WuRepairPlan disk.surface).CommandLine
+        Assert-Equal 'dism.exe /Online /Cleanup-Image /CheckHealth /NoRestart /English' (Get-WuRepairPlan dism.check).CommandLine
+        Assert-Equal 'sfc.exe /scannow' (Get-WuRepairPlan sfc.scan).CommandLine
+        Assert-Equal 'dism.exe /Online /Cleanup-Image /RestoreHealth /Source:"WIM:E:\Windows media\install.wim:6" /LimitAccess /NoRestart /English' (Get-WuRepairPlan dism.source -SourcePath 'E:\Windows media\install.wim' -SourceIndex 6).CommandLine
+        Assert-Equal 'dism.exe /Get-WimInfo /WimFile:"E:\Windows media\install.wim" /NoRestart /English' (Get-WuRepairPlan source.info -SourcePath 'E:\Windows media\install.wim').CommandLine
     }
 }
 
@@ -260,6 +316,39 @@ exit 7
     finally { Remove-Module -ModuleInfo $module -Force }
 }
 
+Test-Case 'The native runner passes repair switches and spaced WIM values intact to a real child process' {
+    $module = Import-Module (Join-Path $script:RepoRoot 'src/WinUtility.Repair.psm1') -Force -PassThru
+    $fixture = Join-Path $script:TestRoot 'repair argument observer.ps1'
+    [IO.File]::WriteAllText($fixture, @'
+$observed = [pscustomobject]@{ Values = @($args); CommandLine = [Environment]::CommandLine }
+[Console]::Out.WriteLine((ConvertTo-Json -InputObject $observed -Compress))
+exit 3
+'@)
+    $executableName = 'pwsh'
+    if ($PSVersionTable.PSEdition -eq 'Desktop') { $executableName = 'powershell.exe' }
+    elseif ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) { $executableName = 'pwsh.exe' }
+    try {
+        foreach ($id in @('disk.scan', 'disk.fix', 'disk.surface', 'dism.check', 'sfc.scan', 'dism.source', 'source.info')) {
+            $plan = Get-WuRepairPlan -Id $id -SourcePath 'E:\Windows media\install.wim' -SourceIndex 6
+            $logPath = Join-Path $script:TestRoot ($id + '.arguments.log')
+            $result = & $module {
+                param($Executable, $Script, $Log, $RepairArguments)
+                function script:Write-Host { param($Object, [switch]$NoNewline) }
+                Invoke-WuRepairProcess -FilePath $Executable -Arguments (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $Script) + $RepairArguments) -LogPath $Log
+            } (Join-Path $PSHOME $executableName) $fixture $logPath $plan.Arguments
+            Assert-Equal 3 $result.ExitCode
+            $observed = [IO.File]::ReadAllText($logPath) | ConvertFrom-Json
+            Assert-Equal @($plan.Arguments) @($observed.Values)
+            # On Windows this is the original command line, before any child argv parsing.
+            # Unix reconstructs it from argv, so raw quote placement cannot be tested there.
+            if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
+                Assert-True ($observed.CommandLine.EndsWith($plan.CommandLine.Substring($plan.Tool.Length + 1)))
+            }
+        }
+    }
+    finally { Remove-Module -ModuleInfo $module -Force }
+}
+
 Test-Case 'Repair elevation uses a quoted local entry point and waits for the child before returning' {
     Invoke-RepairFixture {
         param($fake)
@@ -271,9 +360,9 @@ Test-Case 'Repair elevation uses a quoted local entry point and waits for the ch
         Open-WuRepairAsAdministrator -Plain
         Assert-Equal 'RunAs' $script:Elevation.Verb
         Assert-Equal $true $script:Elevation.Wait
-        Assert-True ($script:Elevation.Arguments.Contains('"-Repair"'))
-        Assert-True ($script:Elevation.Arguments.Contains('"-Plain"'))
-        Assert-True ($script:Elevation.Arguments.Contains('"-File"'))
+        Assert-True ($script:Elevation.Arguments.Contains(' -Repair'))
+        Assert-True ($script:Elevation.Arguments.Contains(' -Plain'))
+        Assert-True ($script:Elevation.Arguments.Contains(' -File '))
     }
 }
 

@@ -244,8 +244,12 @@ selections into the child. The original menu stays available after UAC cancellat
 or the child closing. Windows `-Preview` and Linux omit elevation and execution.
 
 Repair commands run through `Diagnostics.Process` with shell execution disabled.
-Argument quoting handles spaces, embedded quotes and trailing backslashes on
-PowerShell 5.1, where `ProcessStartInfo.ArgumentList` is unavailable. Only fixed
+Simple switches and drive letters are passed without quotes: CHKDSK rejects a
+quoted `/scan`. Values requiring quotes retain their argument boundaries; DISM's
+`/Source:` and `/WimFile:` prefixes remain outside those quotes. The formatter
+handles embedded quotes and trailing backslashes on PowerShell 5.1, where
+`ProcessStartInfo.ArgumentList` is unavailable. Previews, saved `CommandLine`
+fields and process launches share this formatter. Only fixed
 system executables are selected. The optional WIM source is a validated local path
 and positive index, passed as one argument. Both native output streams are drained
 concurrently into a UTF-8 file and the terminal, including partial progress/prompt
@@ -259,7 +263,7 @@ saved as `Running` before each command. Results are atomically saved after each
 step. Report persistence failures stop the queue. Output failures drain the child
 pipes and wait for it, rather than releasing the mutex while that tool still runs.
 
-Reports record UTC times, elapsed seconds, commands/arguments, native exit codes,
+Reports record UTC times, elapsed seconds, executable paths, commands/arguments, native exit codes,
 diagnostic messages, and Windows DISM/CBS/event-log locations. A failed/ambiguous
 disk scan, failed command or required restart stops later steps. Pending-restart
 state is also rechecked before subsequent repairing stages. SFC exits are treated
@@ -267,6 +271,14 @@ conservatively: zero needs summary review, while nonzero stops for attention.
 Interactive disk repairs require reviewing whether scheduling was accepted; they
 are never assumed repaired from a scheduling command's exit. There is no automatic
 reboot, reboot resume or repair undo. Repair reports can be read, but never replayed.
+
+The terminal automatically shows the last output for failed steps, nonzero exits,
+and successful quick DISM checks. This distinguishes an immediate parameter
+failure from a quick diagnostic that completed normally. Log reads use the tail
+of the UTF-8 file and tolerate missing/empty files. The report waits for explicit
+back navigation; an unexpected report-display error is caught by the repair menu.
+New command-description fields are optional when reading older reports. Progress
+callback failures are recorded as failed steps before further commands can start.
 
 ## Extending the utility
 

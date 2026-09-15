@@ -1,11 +1,12 @@
 function Invoke-TerminalScenario {
     param([string[]]$Answers, $Session, [int]$Width = 78, [int]$Height = 50, [switch]$Plain, [switch]$LiveFixture, [switch]$AdminFixture, [switch]$RepairOnly,
-        [ValidateSet('ready', 'agreement', 'missing', 'failed', 'empty')][string]$WinGetScenario = 'missing')
+        [ValidateSet('ready', 'agreement', 'missing', 'failed', 'empty')][string]$WinGetScenario = 'missing',
+        [ValidateSet('ready', 'disk3', 'disk-fix3', 'dism87', 'quick', 'empty-log', 'missing-log', 'launch-failed', 'probe-failed', 'broken-report')][string]$RepairScenario = 'ready')
     if ($null -eq $Session) { $Session = New-WuSession -Catalog $script:Catalog }
     $module = Import-Module (Join-Path $script:RepoRoot 'src/WinUtility.Terminal.psm1') -Force -PassThru
     try {
         return (& $module {
-            param($Inputs, $ActiveSession, $DisplayWidth, $DisplayHeight, $PlainMode, $LiveMode, $AdminMode, $RepairMode, $PackageScenario)
+            param($Inputs, $ActiveSession, $DisplayWidth, $DisplayHeight, $PlainMode, $LiveMode, $AdminMode, $RepairMode, $PackageScenario, $RepairCase, $TestDirectory)
             $script:WuWidthOverride = $DisplayWidth
             $script:WuHeightOverride = $DisplayHeight
             $script:Answers = New-Object System.Collections.Queue
@@ -29,6 +30,8 @@ function Invoke-TerminalScenario {
             $script:UiSearchCalls = New-Object System.Collections.ArrayList
             $script:UiDetailCalls = New-Object System.Collections.ArrayList
             $script:UiPackageScenario = $PackageScenario
+            $script:UiRepairScenario = $RepairCase
+            $script:UiRepairDirectory = Join-Path $TestDirectory ('repair output ' + [guid]::NewGuid().ToString('N'))
             $environment = [pscustomobject]@{
                 OS = 'Windows 11'; PowerShellVersion = '5.1'; WinGetAvailable = $false; SupportedOS = $true
                 Architecture = 'X64'; WinGetVersion = 'Unavailable'; PendingReboot = $null
@@ -54,22 +57,69 @@ function Invoke-TerminalScenario {
                 return [pscustomobject]@{ Status = $status; ExitCode = $code; Output = "Publisher: Fixture Publisher | Package: $PackageId" }
             }
             function script:Get-WuRepairEnvironment {
+                if ($script:UiRepairScenario -eq 'probe-failed') { throw 'Windows drive could not be verified (fixture).' }
                 return [pscustomobject]@{ Readiness = $script:UiEnvironment; SystemDrive = 'W:'; FileSystem = 'NTFS' }
             }
             function script:Open-WuRepairAsAdministrator { param([switch]$Plain) $script:UiElevationCalls++ }
             function script:Get-WuRepairHistory {
-                return [pscustomobject]@{
+                $run = [pscustomobject]@{
                     Path = 'fixture-repair/report.json'; Error = $null
                     Report = [pscustomobject]@{
                         Status = 'Completed'; StartedAtUtc = '2026-09-15T12:00:00Z'; RepairId = 'full'; NativeLogs = @('CBS.log')
                         Steps = @([pscustomobject]@{ Id = 'dism.restore'; Name = 'DISM repair'; Status = 'Completed'; Message = 'Fixture command completed'; ExitCode = 0; DurationSeconds = 1; LogFile = 'dism.restore.log' })
                     }
                 }
+                if ($script:UiRepairScenario -eq 'broken-report') { $run.Report.Steps = @([pscustomobject]@{}) }
+                if ($script:UiRepairScenario -in @('disk3', 'disk-fix3', 'dism87', 'quick', 'empty-log', 'missing-log')) {
+                    [void][IO.Directory]::CreateDirectory($script:UiRepairDirectory)
+                    $run.Path = Join-Path $script:UiRepairDirectory 'report.json'
+                    $run.Report.Status = 'Stopped'
+                    $run.Report.Steps = @([pscustomobject]@{
+                        Id = 'disk.scan'; Name = 'CHKDSK online scan'; Status = 'NeedsAttention'; Message = 'CHKDSK could not check the disk.'
+                        ExitCode = 3; DurationSeconds = 0.1; LogFile = 'disk.scan.log'
+                        CommandLine = 'chkdsk.exe "W:" "/scan"'
+                    })
+                    $output = 'Invalid parameter - "'
+                    if ($script:UiRepairScenario -eq 'disk-fix3') {
+                        $run.Report.Status = 'ReviewRequired'
+                        $run.Report.Steps[0].Id = 'disk.fix'
+                        $run.Report.Steps[0].Status = 'ReviewRequired'
+                    }
+                    if ($script:UiRepairScenario -eq 'dism87') {
+                        $run.Report.Steps[0] = [pscustomobject]@{
+                            Id = 'dism.check'; Name = 'DISM quick check'; Status = 'Failed'; Message = 'DISM rejected a command parameter.'
+                            ExitCode = 87; DurationSeconds = 0.1; LogFile = 'dism.check.log'
+                        }
+                        $output = 'Error: 87. The parameter is incorrect.'
+                    }
+                    if ($script:UiRepairScenario -eq 'quick') {
+                        $run.Report.Status = 'Completed'
+                        $run.Report.Steps[0] = [pscustomobject]@{
+                            Id = 'dism.check'; Name = 'DISM quick check'; Status = 'Completed'; Message = 'Quick check finished.'
+                            ExitCode = 0; DurationSeconds = 0.2; LogFile = 'dism.check.log'
+                        }
+                        $output = 'No component store corruption detected.'
+                    }
+                    if ($script:UiRepairScenario -eq 'empty-log') { $output = '' }
+                    if ($script:UiRepairScenario -ne 'missing-log') {
+                        [IO.File]::WriteAllText((Join-Path $script:UiRepairDirectory $run.Report.Steps[0].LogFile), $output)
+                    }
+                    if ($script:UiRepairScenario -eq 'disk3') {
+                        foreach ($id in @('dism.restore', 'sfc.scan', 'dism.scan', 'sfc.verify')) {
+                            $run.Report.Steps += [pscustomobject]@{
+                                Id = $id; Name = $id; Status = 'NotRun'; Message = 'An earlier step needs attention.'
+                                ExitCode = $null; DurationSeconds = $null; LogFile = ($id + '.log')
+                            }
+                        }
+                    }
+                }
+                return $run
             }
             function script:Invoke-WuRepair {
                 param($Id, $SourcePath, $SourceIndex, [switch]$Confirmed, $OnProgress)
                 if (-not $Confirmed) { throw 'Missing repair confirmation.' }
                 [void]$script:UiRepairCalls.Add([pscustomobject]@{ Id = $Id; SourcePath = $SourcePath; SourceIndex = $SourceIndex })
+                if ($script:UiRepairScenario -eq 'launch-failed') { throw 'The repair tool could not be started (fixture).' }
                 return Get-WuRepairHistory
             }
             if ($LiveMode) {
@@ -110,7 +160,7 @@ function Invoke-TerminalScenario {
             Start-WuTerminal -Session $ActiveSession -Environment $environment -Plain:$PlainMode -Preview:(-not $LiveMode) -Repair:$RepairMode
             if ($script:Answers.Count -ne 0) { throw "Unused test inputs: $($script:Answers.Count)" }
             return [pscustomobject]@{ Text = $script:OutputLines -join "`n"; Session = $ActiveSession; ColorCalls = $script:ColorCalls; ApplyCalls = $script:UiApplyCalls; UndoCalls = $script:UiUndoCalls; RepairCalls = $script:UiRepairCalls; ElevationCalls = $script:UiElevationCalls; SearchCalls = $script:UiSearchCalls; DetailCalls = $script:UiDetailCalls }
-        } $Answers $Session $Width $Height $Plain $LiveFixture $AdminFixture $RepairOnly $WinGetScenario)
+        } $Answers $Session $Width $Height $Plain $LiveFixture $AdminFixture $RepairOnly $WinGetScenario $RepairScenario $script:TestRoot)
     }
     finally { Remove-Module -ModuleInfo $module -Force }
 }
@@ -383,4 +433,65 @@ Test-Case 'Repair-only entry point returns directly and narrow command previews 
     Assert-Equal 0 $result.RepairCalls.Count
     Assert-True (-not $result.Text.Contains('WINUTILITY / LAPTOP SETUP'))
     foreach ($line in ($result.Text -split "`n")) { Assert-True ($line.Length -le 40) "Line exceeds terminal width: $line" }
+}
+
+Test-Case 'CHKDSK exit 3 shows native output automatically and returns to a usable repair menu' {
+    $result = Invoke-TerminalScenario -LiveFixture -AdminFixture -RepairScenario disk3 -Answers @('6', '1', '1', '0', '2', '0', '0', '0')
+    Assert-Equal 1 $result.RepairCalls.Count
+    Assert-Equal 'full' $result.RepairCalls[0].Id
+    Assert-True ($result.Text.Contains('Invalid parameter - "'))
+    Assert-True ($result.Text.Contains('Workflow stopped. Steps not run: 4.'))
+    Assert-True ($result.Text.Contains('chkdsk.exe "W:" "/scan"'))
+    Assert-True ($result.Text.Contains('Back to repair menu'))
+    Assert-True (-not $result.Text.Contains('Repair stopped:'))
+    Assert-Equal 0 $result.Session.Selected.Count
+}
+
+Test-Case 'DISM parameter errors from older reports show their native output without closing the menu' {
+    $result = Invoke-TerminalScenario -LiveFixture -AdminFixture -RepairScenario dism87 -Answers @('6', '2', '1', '0', '7', '0', '0', '0')
+    Assert-Equal 1 $result.RepairCalls.Count
+    Assert-Equal 'dism.check' $result.RepairCalls[0].Id
+    Assert-True ($result.Text.Contains('Error: 87. The parameter is incorrect.'))
+    Assert-True (-not $result.Text.Contains('Repair stopped:'))
+}
+
+Test-Case 'Advanced disk checks also surface nonzero native output when their result requires review' {
+    $result = Invoke-TerminalScenario -LiveFixture -AdminFixture -RepairScenario disk-fix3 -Answers @('6', '8', '1', '1', '0', '0', '0', '0')
+    Assert-Equal 1 $result.RepairCalls.Count
+    Assert-Equal 'disk.fix' $result.RepairCalls[0].Id
+    Assert-True ($result.Text.Contains('Repair report | ReviewRequired'))
+    Assert-True ($result.Text.Contains('Invalid parameter - "'))
+}
+
+Test-Case 'An immediate successful DISM quick check displays its actual diagnosis' {
+    $result = Invoke-TerminalScenario -LiveFixture -AdminFixture -RepairScenario quick -Answers @('6', '2', '1', '0', '0', '0')
+    Assert-Equal 1 $result.RepairCalls.Count
+    Assert-True ($result.Text.Contains('No component store corruption detected.'))
+    Assert-True ($result.Text.Contains('may finish immediately'))
+    Assert-True ($result.Text.Contains('Repair report | Completed'))
+}
+
+Test-Case 'Missing and empty logs do not hide the failed repair or prevent back navigation' {
+    foreach ($scenario in @('empty-log', 'missing-log')) {
+        $result = Invoke-TerminalScenario -LiveFixture -AdminFixture -RepairScenario $scenario -Answers @('6', '1', '1', '0', '0', '0')
+        Assert-Equal 1 $result.RepairCalls.Count
+        Assert-True ($result.Text.Contains('Repair report | Stopped'))
+        if ($scenario -eq 'empty-log') { Assert-True ($result.Text.Contains('The command produced no output.')) }
+        else { Assert-True ($result.Text.Contains('No command output was recorded.')) }
+    }
+}
+
+Test-Case 'Repair preparation and launch errors remain visible and return to the menu' {
+    $result = Invoke-TerminalScenario -LiveFixture -AdminFixture -RepairScenario probe-failed -Answers @('6', '1', '', '2', '', '0', '0')
+    Assert-Equal 0 $result.RepairCalls.Count
+    Assert-True ($result.Text.Contains('Windows drive could not be verified'))
+    $result = Invoke-TerminalScenario -LiveFixture -AdminFixture -RepairScenario launch-failed -Answers @('6', '1', '1', '', '2', '1', '', '0', '0')
+    Assert-Equal @('full', 'dism.check') @($result.RepairCalls.Id)
+    Assert-True ($result.Text.Contains('The repair tool could not be started'))
+}
+
+Test-Case 'Unexpected report display failures are contained by the repair menu' {
+    $result = Invoke-TerminalScenario -LiveFixture -AdminFixture -RepairScenario broken-report -Answers @('6', 'l', '1', '', '0', '0')
+    Assert-Equal 0 $result.RepairCalls.Count
+    Assert-True ($result.Text.Contains('Repair menu action failed:'))
 }

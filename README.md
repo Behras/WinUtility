@@ -311,6 +311,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\WinUtility.ps1 -Repair
 Add `-Preview` to explore it on Windows. Linux always previews; no Windows repair
 commands run there. Command output is streamed and saved alongside a JSON report
 under `%LOCALAPPDATA%\WinUtility\Repairs`. **L** in the Repair menu reopens reports.
+Failed steps show the last command output automatically and wait for you to return
+to the menu. CHKDSK exit 3 alone does not identify the cause; see the
+[immediate-exit troubleshooting steps](docs/REPAIR.md#chkdsk-exits-immediately-with-code-3).
+DISM's quick CheckHealth can finish immediately; its result is displayed, and
+ScanHealth remains available for a fresh scan.
 Reports belong to the account running the repair, including when different
 administrator credentials are used. Repair changes have no automatic undo.
 

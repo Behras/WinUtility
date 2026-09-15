@@ -42,6 +42,24 @@ The final two steps provide fresh diagnostic output to review.
 Re-run the full workflow after resolving the cause. There is no automatic resume
 after reboot and no unattended retry loop.
 
+### CHKDSK exits immediately with code 3
+
+Code 3 means CHKDSK could not check the disk or left errors unresolved; the code
+alone does not identify the cause. A stopped report shows the last command output
+automatically and waits for **0 -> Back to repair menu**. The remaining stages
+stay **NotRun**. **O** shows the output again.
+[Microsoft: CHKDSK exit codes](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/chkdsk#understanding-exit-codes)
+
+If the output says `Invalid parameter - "`, update your WinUtility copy and
+restart the utility. Earlier versions quoted every native argument, producing
+`chkdsk.exe "C:" "/scan"`. The launcher now uses `chkdsk.exe C: /scan`; DISM and
+SFC switches also stay unquoted. WIM paths containing spaces still retain their
+required quoting. This parameter error does not establish disk corruption.
+
+If a different error persists, use its exact text and the saved command to
+diagnose it before choosing an offline disk check. Code 3 does not automatically
+trigger `/f`, `/r`, a reboot, or further system repairs.
+
 ## Individual tools
 
 The main Repair menu also exposes DISM CheckHealth, ScanHealth and RestoreHealth,
@@ -49,6 +67,10 @@ SFC Scannow and VerifyOnly, and the online disk scan. CheckHealth reads recorded
 corruption status; ScanHealth performs a scan. RestoreHealth attempts repairs and
 may use Windows Update, subject to machine policy.
 [Microsoft: DISM repair](https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/repair-a-windows-image?view=windows-11)
+
+**2 -> Quick health check** can finish immediately because it reads recorded
+corruption status. Its DISM output appears in the report automatically. Use
+**3 -> Scan image health** to perform a fresh scan.
 
 SFC Scannow can replace protected files; VerifyOnly does not repair them. SFC output
 is localized, and WinUtility does not infer a universal health verdict from its
@@ -119,7 +141,10 @@ output remains in the named files. Paths to Windows' DISM and CBS logs are inclu
 in the report. If elevation uses another account, reports are stored under that
 account. Nothing is uploaded.
 
-The report stores command arguments, timing, exit codes and each step's status.
+New reports store the executable path and formatted command as well as arguments,
+timing, exit codes and each step's status. Older reports remain readable. Failed
+steps and nonzero exits show their last output automatically; missing or empty
+logs are reported without leaving the menu.
 **Completed** means a command exited successfully, not that every Windows problem
 is resolved. **ReviewRequired** calls for reading the diagnostic summary.
 **NotRun** stages did not execute. A **Running** report without a completion time
@@ -149,6 +174,9 @@ Before release, test in a disposable Windows 11 VM with a snapshot:
   menu waits for the child and saved reports survive the GitHub launcher's cleanup.
 - Run individual DISM checks and SFC VerifyOnly, including a non-English Windows
   installation. Check that output is readable and report/log files agree.
+- Confirm CHKDSK `/scan` no longer rejects a quote as an invalid parameter. Check
+  that previews and saved command lines match, and that returning from reports
+  leaves the repair menu usable. Use fixtures for forced exit-code failures.
 - Run full repair; check the order and SFC summaries. Verify a known pending
   restart blocks the repairing workflow and report results remain conservative.
 - Open `/f`, decline CHKDSK's scheduling prompt, and verify no boot check is claimed.

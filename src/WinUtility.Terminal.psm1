@@ -634,11 +634,18 @@ function Read-WuFilePath {
 function Write-WuRepairSummary {
     param($Run)
     Write-WuHeading "Repair report | $($Run.Report.Status)" 'Command results and next steps'
+    if ($Run.Report.Status -eq 'Stopped') {
+        $notRun = @($Run.Report.Steps | Where-Object { $_.Status -eq 'NotRun' }).Count
+        Write-WuText -Text "Workflow stopped. Steps not run: $notRun. Review the result below before retrying." -Tone Warning
+    }
     foreach ($step in $Run.Report.Steps) {
         $tone = 'Accent'
         if ($step.Status -ne 'Completed') { $tone = 'Warning' }
         Write-WuText -Text "[$($step.Status)] $($step.Name)" -Tone $tone
         Write-WuText -Text $step.Message -Indent 6
+        if ($step.Status -ne 'NotRun' -and $step.PSObject.Properties.Name -contains 'CommandLine') {
+            Write-WuText -Text $step.CommandLine -Tone Muted -Indent 6
+        }
         if ($null -ne $step.ExitCode) { Write-WuText -Text "Exit: $($step.ExitCode) | Time: $($step.DurationSeconds)s" -Tone Muted -Indent 6 }
     }
     Write-WuText -Text "Saved report and command output: $(Split-Path $Run.Path -Parent)" -Tone Muted
@@ -647,24 +654,41 @@ function Write-WuRepairSummary {
     if ($Run.Report.Status -eq 'Running') { Write-WuText -Text 'This report is incomplete. A repair may still be running or have been interrupted.' -Tone Warning }
 }
 
+function Write-WuRepairLogOutput {
+    param($Run, $Step)
+    Write-WuText -Text "Command output | $($Step.Name)" -Tone Accent
+    try {
+        if ($Step.LogFile -cnotmatch '\A[a-z]+\.[a-z]+\.log\z') { throw 'Invalid repair log name.' }
+        $path = Join-Path (Split-Path $Run.Path -Parent) $Step.LogFile
+        if (-not [IO.File]::Exists($path)) { Write-WuText -Text 'No command output was recorded.' -Tone Muted; return }
+        # Read only the tail; repair output can be large and progress uses carriage returns.
+        $lines = @(Get-Content -LiteralPath $path -Encoding UTF8 -Tail 24 -ErrorAction Stop |
+            ForEach-Object { $_ -split '[\r\n]+' } | Where-Object { $_.Trim().Length -gt 0 } | Select-Object -Last 12)
+        if ($lines.Count -eq 0) { Write-WuText -Text 'The command produced no output.' -Tone Muted }
+        foreach ($line in $lines) { Write-WuText -Text $line -Indent 6 }
+        Write-WuText -Text "Full output: $path" -Tone Muted
+    }
+    catch { Write-WuText -Text "Could not read log: $($_.Exception.Message)" -Tone Warning }
+}
+
 function Show-WuRepairReport {
-    param($Run)
+    param($Run, [string]$BackLabel = 'Back to repair menu')
     Write-WuRepairSummary $Run
+    # Surface the actual native error immediately, including old reports without CommandLine.
+    # Quick checks can finish in seconds; show their diagnosis so completion is unambiguous.
+    foreach ($step in $Run.Report.Steps) {
+        if ($step.Status -in @('Failed', 'NeedsAttention', 'RestartRequired') -or
+            ($null -ne $step.ExitCode -and $step.ExitCode -ne 0) -or
+            ($step.Id -eq 'dism.check' -and $step.Status -eq 'Completed')) {
+            Write-WuRepairLogOutput -Run $Run -Step $step
+        }
+    }
     while ($true) {
         Write-WuOption -Key 'O' -Label 'Show the end of each command log' -Tone Accent
-        Write-WuFooter
-        if ((Read-WuChoice @('O', '0')) -eq '0') { return }
+        Write-WuFooter -Label $BackLabel
+        if ((Read-WuChoice @('O', '0') -Prompt '  Repair report choice') -eq '0') { return }
         foreach ($step in $Run.Report.Steps) {
-            Write-WuText -Text $step.Name -Tone Accent
-            try {
-                $path = Join-Path (Split-Path $Run.Path -Parent) $step.LogFile
-                if (-not [IO.File]::Exists($path)) { Write-WuText -Text 'No command output was recorded.' -Tone Muted; continue }
-                # Progress often uses carriage returns, so split those as well as newlines.
-                $lines = @([IO.File]::ReadAllText($path) -split '[\r\n]+' | Where-Object { $_.Trim().Length -gt 0 } | Select-Object -Last 12)
-                foreach ($line in $lines) { Write-WuText -Text $line -Indent 6 }
-                Write-WuText -Text "Full output: $path" -Tone Muted
-            }
-            catch { Write-WuText -Text "Could not read log: $($_.Exception.Message)" -Tone Warning }
+            Write-WuRepairLogOutput -Run $Run -Step $step
         }
     }
 }
@@ -687,7 +711,7 @@ function Show-WuRepairHistory {
         if ($choice -eq '0') { return }
         $run = $runs[[int]$choice - 1]
         if ($null -ne $run.Error) { Write-WuText -Text $run.Error -Tone Warning; Wait-WuContinue }
-        else { Show-WuRepairReport $run }
+        else { Show-WuRepairReport -Run $run -BackLabel 'Back to repair reports' }
     }
 }
 
@@ -716,12 +740,14 @@ function Show-WuRepairAction {
         for ($i = 0; $i -lt $plan.Count; $i++) {
             $step = $plan[$i]
             Write-WuText -Text "$($i + 1). $($step.Name)" -Tone Title
-            $displayArgs = @($step.Arguments | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } })
-            Write-WuText -Text ($step.Tool + ' ' + ($displayArgs -join ' ')) -Tone Accent -Indent 6
+            Write-WuText -Text $step.CommandLine -Tone Accent -Indent 6
         }
         Write-WuText
         if ($Action.Id -eq 'full') {
             Write-WuText -Text 'Allow time for all five steps. A disk problem, command failure or required restart stops later steps. Run again after resolving the reported issue.'
+        }
+        if ($Action.Id -eq 'dism.check') {
+            Write-WuText -Text 'This quick check reads recorded corruption and may finish immediately. Choose Scan image health for a fresh scan.' -Tone Muted
         }
         if (@($plan | Where-Object { $_.Interactive }).Count -gt 0) {
             Write-WuText -Text 'Back up important files first. CHKDSK will ask whether to schedule a check at the next restart if it cannot lock the drive. Answer its prompt in your Windows language. WinUtility will not answer or restart for you.' -Tone Warning
@@ -774,16 +800,19 @@ function Show-WuRepairMenu {
         }
         Write-WuFooter
         $choice = Read-WuChoice $options
-        switch ($choice) {
-            '0' { return }
-            '8' { Show-WuRepairMenu -Advanced }
-            'L' { Show-WuRepairHistory }
-            'A' {
-                try { Open-WuRepairAsAdministrator -Plain:$script:WuPlain }
-                catch { Write-WuText -Text "Administrator window was not opened: $($_.Exception.Message)" -Tone Warning; Wait-WuContinue }
+        try {
+            switch ($choice) {
+                '0' { return }
+                '8' { Show-WuRepairMenu -Advanced }
+                'L' { Show-WuRepairHistory }
+                'A' {
+                    try { Open-WuRepairAsAdministrator -Plain:$script:WuPlain }
+                    catch { Write-WuText -Text "Administrator window was not opened: $($_.Exception.Message)" -Tone Warning; Wait-WuContinue }
+                }
+                default { Show-WuRepairAction $actions[[int]$choice - 1] }
             }
-            default { Show-WuRepairAction $actions[[int]$choice - 1] }
         }
+        catch { Write-WuText -Text "Repair menu action failed: $($_.Exception.Message)" -Tone Warning; Wait-WuContinue }
     }
 }
 

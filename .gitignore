@@ -1,0 +1,5 @@
+# Local setup exports and test output
+/setups/
+/TestResults/
+*.tmp
+

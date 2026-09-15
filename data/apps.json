@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "items": [
+    {
+      "id": "app.firefox",
+      "name": "Mozilla Firefox",
+      "category": "Browsers",
+      "description": "A web browser. Selecting it does not change your default browser.",
+      "packageId": "Mozilla.Firefox",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.7zip",
+      "name": "7-Zip",
+      "category": "Utilities",
+      "description": "Open and create common archive formats.",
+      "packageId": "7zip.7zip",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.powertoys",
+      "name": "Microsoft PowerToys",
+      "category": "Utilities",
+      "description": "Optional desktop tools and productivity utilities.",
+      "packageId": "Microsoft.PowerToys",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.vlc",
+      "name": "VLC media player",
+      "category": "Media",
+      "description": "Play local video and audio files.",
+      "packageId": "VideoLAN.VLC",
+      "desiredValue": "installed"
+    },
+    {
+      "id": "app.vscode",
+      "name": "Visual Studio Code",
+      "category": "Development",
+      "description": "A code editor with optional extensions.",
+      "packageId": "Microsoft.VisualStudioCode",
+      "desiredValue": "installed"
+    }
+  ]
+}

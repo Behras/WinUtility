@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "items": [
+    {
+      "id": "privacy.suggestions",
+      "name": "Reduce Windows suggestions",
+      "category": "Privacy & suggestions",
+      "description": "Preview only: reduce selected tips, recommendations, and promotional suggestions in Windows.",
+      "desiredValue": "reduced",
+      "effect": "Windows tips and promotional suggestions would be reduced.",
+      "requiresAdmin": false,
+      "requiresRestart": false
+    },
+    {
+      "id": "explorer.extensions",
+      "name": "Show file extensions",
+      "category": "Desktop & Explorer",
+      "description": "Show endings such as .txt, .jpg, and .exe in File Explorer.",
+      "desiredValue": "visible",
+      "effect": "File Explorer would show extensions for known file types.",
+      "requiresAdmin": false,
+      "requiresRestart": false
+    },
+    {
+      "id": "explorer.hidden",
+      "name": "Show hidden files",
+      "category": "Desktop & Explorer",
+      "description": "Display hidden files and folders; protected operating system files stay hidden.",
+      "desiredValue": "visible",
+      "effect": "Hidden files and folders would appear in File Explorer.",
+      "requiresAdmin": false,
+      "requiresRestart": false
+    },
+    {
+      "id": "power.balanced",
+      "name": "Use the Balanced power plan",
+      "category": "Power & battery",
+      "description": "Preview only: an example laptop power choice; no real power handler is implemented yet.",
+      "desiredValue": "balanced",
+      "effect": "The Balanced power plan would be selected on supported laptops.",
+      "requiresAdmin": true,
+      "requiresRestart": false
+    },
+    {
+      "id": "windows.remove-solitaire",
+      "name": "Remove Microsoft Solitaire Collection",
+      "category": "Windows apps & features",
+      "description": "Preview only: example inbox-app cleanup for the current user, if the app is installed.",
+      "desiredValue": "removed",
+      "effect": "Microsoft Solitaire Collection would be removed for the current user if present.",
+      "requiresAdmin": false,
+      "requiresRestart": false
+    }
+  ]
+}

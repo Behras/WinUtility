@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "items": [
+    {
+      "id": "minimal",
+      "name": "Minimal",
+      "description": "Example preset: a lean setup with basic Explorer preferences and an archive utility.",
+      "itemIds": ["privacy.suggestions", "explorer.extensions", "app.7zip"]
+    },
+    {
+      "id": "balanced",
+      "name": "Balanced",
+      "description": "Example preset: Minimal plus hidden files, a browser, and a media player.",
+      "itemIds": ["privacy.suggestions", "explorer.extensions", "explorer.hidden", "app.7zip", "app.firefox", "app.vlc"]
+    },
+    {
+      "id": "full",
+      "name": "Full",
+      "description": "Example preset: Balanced plus desktop utilities and a code editor.",
+      "itemIds": ["privacy.suggestions", "explorer.extensions", "explorer.hidden", "app.7zip", "app.firefox", "app.vlc", "app.powertoys", "app.vscode"]
+    }
+  ]
+}

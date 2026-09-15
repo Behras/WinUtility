@@ -267,21 +267,6 @@ function Get-WuPlan {
     }
 }
 
-function Invoke-WuSimulation {
-    [CmdletBinding()]
-    param([Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Plan)
-    # Simulation is independent of Windows APIs and always returns data only.
-    foreach ($action in $Plan) {
-        [pscustomobject]@{
-            Id = $action.Id
-            Name = $action.Name
-            Status = 'Simulated'
-            Message = $action.Effect
-            Changed = $false
-        }
-    }
-}
-
 function Get-WuSelectionSnapshot {
     param($Session)
     $items = @(
@@ -395,4 +380,4 @@ function Get-WuDefaultSetupPath {
     return (Join-Path (Join-Path $documents 'WinUtility') 'setup.json')
 }
 
-Export-ModuleMember -Function Get-WuCatalog, New-WuSession, Set-WuSelection, Remove-WuSelection, Clear-WuSelection, Set-WuPreset, Get-WuPlan, Invoke-WuSimulation, Test-WuUnsavedChanges, Export-WuSetup, Import-WuSetup, Set-WuImportedSetup, Get-WuEnvironment, Get-WuDefaultSetupPath, Get-WuAppItems, Find-WuCatalogApp, Add-WuWinGetSelection, ConvertFrom-WuBatchInput
+Export-ModuleMember -Function Get-WuCatalog, New-WuSession, Set-WuSelection, Remove-WuSelection, Clear-WuSelection, Set-WuPreset, Get-WuPlan, Test-WuUnsavedChanges, Export-WuSetup, Import-WuSetup, Set-WuImportedSetup, Get-WuEnvironment, Get-WuDefaultSetupPath, Get-WuAppItems, Find-WuCatalogApp, Add-WuWinGetSelection, ConvertFrom-WuBatchInput

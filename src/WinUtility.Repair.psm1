@@ -373,13 +373,14 @@ function Get-WuRepairHistory {
 
 function Open-WuRepairAsAdministrator {
     [CmdletBinding()]
-    param([switch]$Plain)
+    param([switch]$Plain, [switch]$NoKeyNavigation)
     $environment = Get-WuRepairEnvironment
     if (-not $environment.Readiness.SupportedOS) { throw 'Administrator repair is available on Windows 11.' }
     $entry = [IO.Path]::GetFullPath((Join-Path (Split-Path $PSScriptRoot -Parent) 'WinUtility.ps1'))
     $executable = Join-Path $environment.SystemDirectory 'WindowsPowerShell\v1.0\powershell.exe'
     $arguments = @('-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $entry, '-Repair')
     if ($Plain) { $arguments += '-Plain' }
+    if ($NoKeyNavigation) { $arguments += '-NoKeyNavigation' }
     # Wait so the GitHub bootstrap keeps its temporary checkout until this child closes.
     Start-Process -FilePath $executable -ArgumentList (ConvertTo-WuNativeArguments $arguments) -Verb RunAs -Wait -ErrorAction Stop | Out-Null
 }

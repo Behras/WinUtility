@@ -357,11 +357,12 @@ Test-Case 'Repair elevation uses a quoted local entry point and waits for the ch
             param($FilePath, $ArgumentList, $Verb, [switch]$Wait, $ErrorAction)
             $script:Elevation = [pscustomobject]@{ Path = $FilePath; Arguments = $ArgumentList; Verb = $Verb; Wait = [bool]$Wait }
         }
-        Open-WuRepairAsAdministrator -Plain
+        Open-WuRepairAsAdministrator -Plain -NoKeyNavigation
         Assert-Equal 'RunAs' $script:Elevation.Verb
         Assert-Equal $true $script:Elevation.Wait
         Assert-True ($script:Elevation.Arguments.Contains(' -Repair'))
         Assert-True ($script:Elevation.Arguments.Contains(' -Plain'))
+        Assert-True ($script:Elevation.Arguments.Contains(' -NoKeyNavigation'))
         Assert-True ($script:Elevation.Arguments.Contains(' -File '))
     }
 }

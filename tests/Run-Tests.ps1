@@ -52,8 +52,10 @@ try {
     Import-Module (Join-Path $script:RepoRoot 'src/WinUtility.Core.psm1') -Force
     $script:Catalog = Get-WuCatalog -DataPath (Join-Path $script:RepoRoot 'data')
     . (Join-Path $PSScriptRoot 'Core.Tests.ps1')
+    . (Join-Path $PSScriptRoot 'Input.Tests.ps1')
     . (Join-Path $PSScriptRoot 'Terminal.Tests.ps1')
     . (Join-Path $PSScriptRoot 'Windows.Tests.ps1')
+    . (Join-Path $PSScriptRoot 'AppWorker.Tests.ps1')
     . (Join-Path $PSScriptRoot 'Repair.Tests.ps1')
     . (Join-Path $PSScriptRoot 'Bootstrap.Tests.ps1')
 }

@@ -10,6 +10,8 @@ Use **App installs** to browse these categories. `S` searches names, description
 categories and IDs; `B` shows the full local list. Enter `1,3,5-7` to toggle
 several visible apps, or `A` / `C` to select / clear that page. Selections carry
 across pages, categories and searches. `R` opens the installation review.
+Arrow keys move the highlight; **Space** or **Enter** toggles an app. **Esc** goes
+back, and **Left/Right** changes pages when no shortcut is being typed.
 
 On Windows, `W` searches the live `winget` source beyond this list. Paste one or
 more complete, exact IDs; WinUtility verifies each with `winget show`, displays

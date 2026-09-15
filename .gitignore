@@ -2,4 +2,9 @@
 /setups/
 /TestResults/
 *.tmp
-
+*.log
+*.user
+.DS_Store
+Thumbs.db
+/.vscode/
+/.idea/

@@ -4,7 +4,7 @@ WinUtility is a Windows 11 setup utility written for Windows PowerShell 5.1. The
 terminal and core logic also run in PowerShell 7, including on non-Windows hosts
 for development. Real execution covers WinGet installs, two reversible Explorer
 settings, and a separate Windows repair workflow. Linux and `-Preview` keep
-simulation and repair command previews available without live controls.
+catalog browsing, saved setups and repair command review available without live controls.
 
 ## Responsibilities
 
@@ -13,7 +13,7 @@ bootstrap.ps1 -> download one commit -> WinUtility.ps1
                                           |
                                   Terminal UI module
                                           |
-data/*.json -> Core module -> selection -> ordered plan -> simulation results
+data/*.json -> Core module -> selection -> ordered plan -> review
                                   |             |
                            saved setup JSON     +-> Windows adapter -> history
 ```
@@ -22,15 +22,17 @@ data/*.json -> Core module -> selection -> ordered plan -> simulation results
 | --- | --- |
 | `WinUtility.ps1` | Import modules, load catalogs, create the session, start the menu. |
 | `bootstrap.ps1` | Resolve GitHub `main` to a commit, download/extract that commit, launch in a child PowerShell process, clean temporary files. |
-| `src/WinUtility.Terminal.psm1` | Numbered menus, item toggles, previews, confirmations, and displaying results. |
-| `src/WinUtility.Core.psm1` | Catalog validation, session state, selection changes, planning, simulation, JSON persistence. |
+| `src/WinUtility.Terminal.psm1` | Menus, item toggles, previews, confirmations, and displaying results. |
+| `src/WinUtility.Input.psm1` | Console key input, focused selection display, text editing, and cursor restoration. |
+| `src/WinUtility.Core.psm1` | Catalog validation, session state, selection changes, planning, JSON persistence. |
 | `src/WinUtility.Windows.psm1` | Readiness probes, current-state review, WinGet calls, Explorer handlers, durable history and undo. |
+| `src/WinUtility.AppWorker.ps1` | Internal entry point for installing an app in the same user's non-administrator session. |
 | `src/WinUtility.Repair.psm1` | Code-owned repair plans, administrator checks, native command execution, repair reports, and dedicated elevation. |
 | `data/` | Setting, app, and preset catalogs. |
 | `tests/` | Dependency-free behavioral tests and isolated launcher fixtures. |
 
 The entry point starts with an empty selection. Readiness probes are read-only;
-selection and simulation do not execute Windows actions. Real apply has a separate
+selection and review do not execute Windows actions. Real apply has a separate
 UI confirmation, and the execution adapter independently checks Windows/user
 identity before creating history or making changes. The bootstrap's child-process
 execution policy does not change persistent PowerShell execution policies.
@@ -41,7 +43,7 @@ execution policy does not change persistent PowerShell execution policies.
 apps, a map of selected items keyed by stable ID, a fingerprint of the last
 saved/imported selection, and the last apply result
 for retrying failed apps. There is one desired
-value per catalog entry in this prototype. Selecting an item queues that value;
+value per catalog entry. Selecting an item queues that value;
 deselecting it removes the planned action, rather than queueing its inverse.
 
 - `Set-WuPreset` replaces the selection with all referenced settings and apps.
@@ -60,16 +62,21 @@ deselecting it removes the planned action, rather than queueing its inverse.
   names, descriptions, categories and package IDs. `ConvertFrom-WuBatchInput`
   validates numeric lists/ranges against the visible page before returning any
   choices; repeated numbers are returned once.
-- `Invoke-WuSimulation -Plan <array>` returns `Id`, `Name`, `Status`, `Message`, and
-  `Changed` per item. Status is always `Simulated`; Changed is always false. Empty
-  plans return no results. Simulation does not check current machine state.
 
 App administrator/restart metadata are null because installers decide those
 requirements. `Get-WuActionCapability` identifies implemented handlers from code;
 adding a setting to JSON does not give it executable behavior. Existing version 1
 setups remain supported; version 2 adds selections from live WinGet search.
 
-The UI uses `Read-Host` and `Write-Host` through small display helpers. A cyan/green
+The UI uses `Console.ReadKey` for interactive choices and text fields, with
+`Read-Host` as the fallback. `Write-WuOption` collects ordered choices for the
+keyboard selector, or prints numbered entries in fallback mode. The selector
+keeps focus across repeated menus, scrolls long lists, supports typed shortcuts
+and batches, and restores the cursor after input. Windows uses console cursor
+coordinates; Unix uses relative cursor movement without a position query.
+Confirmation calls explicitly default to Cancel. `-NoKeyNavigation` disables
+key input, as do redirected streams, unsupported hosts, and very small consoles.
+Console failures fall back to typed input. A cyan/green
 palette, framed headings, selection indicators, and category sections share the
 same renderer. Text wraps to the available width; the home menu omits descriptions
 in windows shorter than 38 rows. UTF-8 consoles get rounded borders, created from
@@ -166,8 +173,10 @@ with `--version`, without automatically installing or repairing it. Missing
 registry/power information remains unknown rather than being reported healthy.
 
 `Get-WuExecutionReview -Plan -Environment` reads implemented setting state and
-queries each exact WinGet package ID. It returns `Id`, `Name`, `Capability`,
-`Current`, `Status`, and `Message`; preview-only items have no executable handler.
+queries each exact WinGet package ID in normal sessions. Elevated sessions defer
+app checks to the normal-user worker during apply. It returns `Id`, `Name`, `Capability`,
+`Current`, `Status`, and `Message`; `NotImplemented` items have no executable handler
+and are skipped without changes.
 Review queries do not auto-accept source terms. Fresh-source agreement failures
 can therefore show unknown status; apply rechecks after explicit confirmation.
 
@@ -185,6 +194,28 @@ flags; no `--force`, security-check bypass, or `--allow-reboot` is added. The na
 adapter captures stdout/stderr and the signed exit code while restoring the
 caller's automatic exit-code variable. Interactive installer/UAC behavior can
 still depend on the selected installer.
+
+App installation always starts without administrator privileges. From an elevated
+menu, the adapter registers a temporary, on-demand Task Scheduler task with the
+current user's SID, `TASK_LOGON_INTERACTIVE_TOKEN`, and `TASK_RUNLEVEL_LUA`.
+There are no triggers or stored passwords. The worker verifies its actual SID,
+session ID and non-administrator token, discovers WinGet in that context, then
+checks for an existing installation before installing. This handles packages
+that prohibit elevation without a hardcoded app list or a misleading `--scope user`
+workaround. Installers that need elevation can still request UAC approval.
+[Microsoft: task security contexts](https://learn.microsoft.com/en-us/windows/win32/taskschd/security-contexts-for-running-tasks).
+
+The parent saves the Pending action before starting the worker. Requests contain
+only a validated package ID, agreement confirmation, user/session identity and a
+unique request ID; the worker constructs fixed WinGet commands. Output streams
+back to the original menu, and a matching, atomically written result carries the
+actual exit code into the existing history/retry flow. Startup is limited to 60
+seconds and execution to six hours. Cleanup removes the temporary task and its
+request files, stopping unfinished workers when interrupted. A worker failure
+never retries an app as administrator.
+If the process is forcibly closed, its history can remain Pending and a temporary
+task/folder can remain; the task has no automatic trigger. Check installed apps
+before retrying an interrupted run.
 
 The returned run has `Path` and `Actions`. Each action records identity, kind,
 package ID, status/message, exit code/output, nullable `Changed`, restart status,
@@ -308,8 +339,11 @@ Terminal scenarios exercise repair previews, cancellation, confirmation, elevati
 and reports, as well as app batches, pagination, discovery and search failures.
 Core tests cover version 1/2 saved setups, package deduplication and isolated
 imports; Windows tests verify discovery arguments and queue behavior with added
-apps. Actual installations and Windows repair commands are never executed by this suite.
+apps. App-worker tests cover same-user permissions, limited task registration and
+cleanup, queued results, output streaming, and failure before installation.
+Actual installations and Windows repair commands are never executed by this suite.
 The GitHub Actions workflow runs the suite on Windows with `powershell` (5.1) and
 `pwsh` (7). Linux tests do not establish real WinGet/Explorer correctness on Windows
 11 or establish real DISM/SFC/CHKDSK behavior. Run the disposable-VM acceptance
-checks in the README and repair guide before a release.
+checks in [CONTRIBUTING.md](../CONTRIBUTING.md#windows-acceptance-checks) and the
+repair guide before a release.

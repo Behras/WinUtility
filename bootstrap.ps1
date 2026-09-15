@@ -30,7 +30,7 @@
         $roots = @(Get-ChildItem -LiteralPath $extractPath -Directory)
         if ($roots.Count -ne 1) { throw 'The archive did not contain one project directory.' }
         $projectPath = $roots[0].FullName
-        foreach ($required in @('WinUtility.ps1', 'src/WinUtility.Core.psm1', 'src/WinUtility.Terminal.psm1', 'src/WinUtility.Windows.psm1', 'src/WinUtility.Repair.psm1', 'data/settings.json', 'data/apps.json', 'data/presets.json')) {
+        foreach ($required in @('WinUtility.ps1', 'src/WinUtility.Core.psm1', 'src/WinUtility.Terminal.psm1', 'src/WinUtility.Windows.psm1', 'src/WinUtility.AppWorker.ps1', 'src/WinUtility.Repair.psm1', 'src/WinUtility.Input.psm1', 'data/settings.json', 'data/apps.json', 'data/presets.json')) {
             if (-not (Test-Path -LiteralPath (Join-Path $projectPath $required) -PathType Leaf)) {
                 throw "The archive is missing '$required'."
             }

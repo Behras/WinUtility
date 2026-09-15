@@ -8,11 +8,10 @@ Test-Case 'Every PowerShell file parses without errors' {
     }
 }
 
-Test-Case 'New sessions start empty and clean, including an empty simulation' {
+Test-Case 'New sessions start empty and clean' {
     $session = New-WuSession -Catalog $script:Catalog
     Assert-Equal 0 @(Get-WuPlan -Session $session).Count
     Assert-True (-not (Test-WuUnsavedChanges -Session $session))
-    Assert-Equal 0 @(Invoke-WuSimulation -Plan @()).Count
 }
 
 Test-Case 'Presets contain the specified complete setups and replace old choices' {
@@ -45,7 +44,7 @@ Test-Case 'Manual edits preserve unaffected preset choices and prevent duplicate
     Assert-Equal 4 $session.Selected.Count
 }
 
-Test-Case 'Plan order is deterministic and simulation leaves state unchanged' {
+Test-Case 'Plan order is deterministic and reviewing it leaves selections unchanged' {
     $session = New-WuSession -Catalog $script:Catalog
     Set-WuSelection -Session $session -Id 'app.vlc'
     Set-WuSelection -Session $session -Id 'power.balanced'
@@ -55,12 +54,7 @@ Test-Case 'Plan order is deterministic and simulation leaves state unchanged' {
     Assert-True $plan[1].RequiresAdmin
     Assert-Equal 'VideoLAN.VLC' $plan[2].PackageId
     $before = ConvertTo-Json -InputObject $session.Selected -Depth 10
-    $results = @(Invoke-WuSimulation -Plan $plan)
-    Assert-Equal 3 $results.Count
-    foreach ($result in $results) {
-        Assert-Equal 'Simulated' $result.Status
-        Assert-Equal $false $result.Changed
-    }
+    Assert-Equal @($plan.Id) @((Get-WuPlan -Session $session).Id)
     Assert-Equal $before (ConvertTo-Json -InputObject $session.Selected -Depth 10)
     Assert-True (Test-WuUnsavedChanges -Session $session)
 }

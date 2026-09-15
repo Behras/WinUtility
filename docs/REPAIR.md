@@ -4,6 +4,9 @@ Open **6 -> Repair Windows**, or launch `WinUtility.ps1 -Repair`. On Windows,
 **A** opens a dedicated administrator window and returns to the original menu
 when that window closes. The GitHub launcher keeps its temporary files until the
 administrator window exits. Linux and `-Preview` show command plans only.
+Use arrows and Enter to navigate, or type a displayed shortcut. Esc returns from
+the current screen. Confirmation starts on Cancel. `-NoKeyNavigation` uses typed
+input and is retained when opening the administrator repair window.
 
 Repair is independent of laptop setup selections. Each repair asks you to review
 its commands before running. Save your work and keep the laptop on AC power during

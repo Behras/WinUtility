@@ -2,6 +2,7 @@ Set-StrictMode -Version 2.0
 Import-Module (Join-Path $PSScriptRoot 'WinUtility.Core.psm1') -Scope Local
 Import-Module (Join-Path $PSScriptRoot 'WinUtility.Windows.psm1') -Scope Local
 Import-Module (Join-Path $PSScriptRoot 'WinUtility.Repair.psm1') -Scope Local
+Import-Module (Join-Path $PSScriptRoot 'WinUtility.Input.psm1') -Scope Local
 
 $script:WuPlain = $false
 $script:WuUnicode = $false
@@ -11,9 +12,14 @@ $script:WuPreviewOnly = $true
 $script:WuEnvironment = $null
 $script:WuAcceptSourceAgreements = $false
 $script:WuColors = @{ Normal = 'Gray'; Title = 'White'; Accent = 'Cyan'; Muted = 'DarkGray'; Success = 'Green'; Warning = 'Yellow' }
+$script:WuKeyNavigation = $false
+$script:WuMenuOptions = @()
+$script:WuMenuTitle = ''
+$script:WuMenuFocus = @{}
 
 function Initialize-WuAppearance {
-    param([switch]$Plain)
+    param([switch]$Plain, [switch]$NoKeyNavigation)
+    $script:WuKeyNavigation = -not $NoKeyNavigation -and (Test-WuKeyInput)
     $script:WuPlain = $Plain -or -not [string]::IsNullOrEmpty($env:NO_COLOR) -or $env:TERM -eq 'dumb'
     try { $script:WuPlain = $script:WuPlain -or [Console]::IsOutputRedirected } catch { }
     # Keep source ASCII for Windows PowerShell 5.1. Modern UTF-8 consoles get borders.
@@ -61,6 +67,7 @@ function Write-WuOutput {
 
 function Write-WuText {
     param([string]$Text = '', [string]$Tone = 'Normal', [int]$Indent = 2)
+    if ($script:WuKeyNavigation -and $Text.Length -eq 0) { return }
     if ($Text.Length -eq 0) { Write-WuOutput; return }
     $width = [Math]::Max(1, (Get-WuDisplayWidth) - $Indent)
     foreach ($line in @(Get-WuWrappedText -Text $Text -Width $width)) {
@@ -76,6 +83,10 @@ function Write-WuRule {
 
 function Write-WuHeading {
     param([string]$Title, [string]$Subtitle = '')
+    $script:WuMenuOptions = @(); $script:WuMenuTitle = $Title
+    if ($script:WuKeyNavigation) {
+        try { Clear-WuKeyScreen } catch { $script:WuKeyNavigation = $false }
+    }
     $width = Get-WuDisplayWidth
     $horizontal = '-'; $vertical = '|'; $topLeft = '+'; $topRight = '+'; $bottomLeft = '+'; $bottomRight = '+'
     if ($script:WuUnicode) {
@@ -99,6 +110,8 @@ function Write-WuHeading {
 
 function Write-WuOption {
     param([string]$Key, [string]$Label, [string]$Description = '', [string]$Tone = 'Title')
+    $script:WuMenuOptions += [pscustomobject]@{ Key = $Key; Label = $Label; Description = $Description; Color = $script:WuColors[$Tone] }
+    if ($script:WuKeyNavigation) { return }
     Write-WuText -Text ('[{0}]  {1}' -f $Key, $Label) -Tone $Tone
     if ($Description.Length -gt 0) { Write-WuText -Text $Description -Tone Muted -Indent 7 }
 }
@@ -124,16 +137,48 @@ function Format-WuCount {
 }
 
 function Read-WuInput {
-    param([string]$Prompt)
+    param([string]$Prompt, [string]$CancelValue = '')
+    if ($script:WuKeyNavigation) {
+        try { return (Read-WuKeyChoice -Prompt $Prompt -AllowText -CancelValue $CancelValue -Plain:$script:WuPlain).Value }
+        catch { $script:WuKeyNavigation = $false; Write-WuText -Text 'Key navigation is unavailable. Type your response and press Enter.' -Tone Warning }
+    }
     $value = Read-Host -Prompt $Prompt
     if ($null -eq $value) { throw 'Input ended. Open WinUtility in an interactive PowerShell window.' }
     return $value.Trim()
 }
 
+function Read-WuMenuInput {
+    param([string[]]$Options, [string]$Prompt = 'Choose', [string]$DefaultKey = '',
+        [switch]$AllowText, [string[]]$ToggleKeys = @(), [switch]$PageNavigation)
+    $items = @(); $seen = @{}
+    foreach ($item in $script:WuMenuOptions) {
+        if ($Options -contains $item.Key -and -not $seen.ContainsKey($item.Key)) { $items += $item; $seen[$item.Key] = $true }
+    }
+    foreach ($key in $Options) {
+        if (-not $seen.ContainsKey($key)) { $items += [pscustomobject]@{ Key = $key; Label = $key; Description = ''; Color = 'Gray' } }
+    }
+    $script:WuMenuOptions = @()
+    if ($script:WuKeyNavigation) {
+        $scope = $script:WuMenuTitle + '|' + ($Options -join ',')
+        if ($DefaultKey.Length -eq 0 -and $script:WuMenuFocus.ContainsKey($scope)) { $DefaultKey = $script:WuMenuFocus[$scope] }
+        try {
+            $result = Read-WuKeyChoice -Items $items -DefaultKey $DefaultKey -Prompt $Prompt -AllowText:$AllowText -ToggleKeys $ToggleKeys -PageNavigation:$PageNavigation -Plain:$script:WuPlain
+            $script:WuMenuFocus[$scope] = $result.FocusKey
+            return $result.Value
+        }
+        catch {
+            $script:WuKeyNavigation = $false
+            Write-WuText -Text 'Key navigation is unavailable. Type a choice and press Enter.' -Tone Warning
+            foreach ($item in $items) { Write-WuOption -Key $item.Key -Label $item.Label }
+        }
+    }
+    return Read-WuInput $Prompt
+}
+
 function Read-WuChoice {
-    param([string[]]$Options, [string]$Prompt = '  Choose')
+    param([string[]]$Options, [string]$Prompt = '  Choose', [string]$DefaultKey = '', [string[]]$ToggleKeys = @())
     while ($true) {
-        $choice = Read-WuInput $Prompt
+        $choice = Read-WuMenuInput -Options $Options -Prompt $Prompt -DefaultKey $DefaultKey -ToggleKeys $ToggleKeys
         if ($Options -contains $choice) { return $choice.ToUpperInvariant() }
         Write-WuText -Text ('Enter one of: {0}.' -f ($Options -join ', ')) -Tone Warning
     }
@@ -145,13 +190,14 @@ function Wait-WuContinue {
 
 function Confirm-WuChoice {
     param([string]$Message, [string]$ConfirmLabel = 'Confirm')
+    $script:WuMenuOptions = @()
     Write-WuText
     Write-WuRule
     Write-WuText -Text $Message -Tone Warning
     Write-WuText
     Write-WuOption -Key '1' -Label $ConfirmLabel -Tone Accent
     Write-WuOption -Key '0' -Label 'Cancel' -Tone Muted
-    return (Read-WuChoice @('1', '0')) -eq '1'
+    return (Read-WuChoice @('1', '0') -DefaultKey '0') -eq '1'
 }
 
 function Write-WuPlan {
@@ -182,8 +228,8 @@ function Write-WuPlan {
             Write-WuText -Text "Current: $($state[0].Current) | $($state[0].Status)" -Tone Accent -Indent 6
             Write-WuText -Text $state[0].Message -Tone Muted -Indent 6
         }
-        elseif ((Get-WuActionCapability $action) -eq 'PreviewOnly') {
-            Write-WuText -Text 'Preview only / not implemented for real execution.' -Tone Warning -Indent 6
+        elseif ((Get-WuActionCapability $action) -eq 'NotImplemented') {
+            Write-WuText -Text 'Not implemented yet. This item makes no changes.' -Tone Warning -Indent 6
         }
         if ($action.Kind -eq 'App') {
             Write-WuText -Text "WinGet: $($action.PackageId)" -Tone Muted -Indent 6
@@ -250,10 +296,10 @@ function Show-WuItemPicker {
         }
         $selectedCount = @($Items | Where-Object { $Session.Selected.ContainsKey($_.id) }).Count
         $mode = 'Review before applying'
-        if ($script:WuPreviewOnly) { $mode = 'Simulation only' }
+        if ($script:WuPreviewOnly) { $mode = 'Windows actions unavailable on this host' }
         Write-WuText -Text "$selectedCount of $($Items.Count) selected here | $mode" -Tone Accent
         Write-WuFooter
-        $choice = Read-WuChoice $options
+        $choice = Read-WuChoice $options -ToggleKeys @($options | Where-Object { $_ -ne '0' })
         if ($choice -eq '0') { return }
         $item = $Items[[int]$choice - 1]
         if ($Session.Selected.ContainsKey($item.id)) {
@@ -306,9 +352,9 @@ function Show-WuAppPicker {
             $item = $Items[$i]; $mark = ' '; $tone = 'Title'
             if ($Session.Selected.ContainsKey($item.id)) { $mark = 'x'; $tone = 'Success' }
             $description = ''
-            if (-not (Test-WuCompactDisplay)) { $description = $item.description }
+            if ($script:WuKeyNavigation -or -not (Test-WuCompactDisplay)) { $description = $item.description }
             Write-WuOption -Key ($i + 1).ToString() -Label "[$mark] $($item.name)" -Description $description -Tone $tone
-            if (-not (Test-WuCompactDisplay)) { Write-WuText -Text "WinGet: $($item.packageId)" -Tone Muted -Indent 7 }
+            if (-not $script:WuKeyNavigation -and -not (Test-WuCompactDisplay)) { Write-WuText -Text "WinGet: $($item.packageId)" -Tone Muted -Indent 7 }
         }
         $selectedHere = @($Items | Where-Object { $Session.Selected.ContainsKey($_.id) }).Count
         $selectedTotal = @(Get-WuAppItems $Session | Where-Object { $Session.Selected.ContainsKey($_.id) }).Count
@@ -322,8 +368,24 @@ function Show-WuAppPicker {
             Write-WuText -Text 'D <number> details | R review queue' -Tone Muted
         }
         if ($pageCount -gt 1) { Write-WuText -Text 'N next page | P previous page' -Tone Accent }
+        $options = @('0', 'R')
+        $toggleKeys = @()
+        for ($i = $first; $i -lt $last; $i++) { $toggleKeys += ($i + 1).ToString() }
+        $options += $toggleKeys
+        if ($Items.Count -gt 0) { $options += @('A', 'C') }
+        if ($page -lt ($pageCount - 1)) { $options += 'N' }
+        if ($page -gt 0) { $options += 'P' }
+        if ($script:WuKeyNavigation) {
+            if ($Items.Count -gt 0) {
+                Write-WuOption -Key 'A' -Label 'Select page'
+                Write-WuOption -Key 'C' -Label 'Clear page'
+            }
+            Write-WuOption -Key 'R' -Label 'Review & install selected apps' -Tone Accent
+            if ($options -contains 'N') { Write-WuOption -Key 'N' -Label 'Next page' }
+            if ($options -contains 'P') { Write-WuOption -Key 'P' -Label 'Previous page' }
+        }
         Write-WuFooter
-        $choice = Read-WuInput '  Choose'
+        $choice = Read-WuMenuInput -Options $options -AllowText -ToggleKeys $toggleKeys -PageNavigation
         if ($choice -eq '0') { return }
         if ($choice -ieq 'R') { Show-WuReview -Session $Session; continue }
         if ($choice -ieq 'N' -and $page -lt ($pageCount - 1)) { $page++; continue }
@@ -433,7 +495,7 @@ function Show-WuLiveAppSearch {
             if ($result.Status -ne 'Found') { throw "WinGet search failed with exit code $($result.ExitCode). Read its output above." }
             Write-WuText -Text 'Showing up to 40 results. Refine the search if an ID is truncated. Use exact IDs, including their capitalization.' -Tone Muted
             Write-WuText -Text 'Enter several IDs separated by commas or spaces, e.g. Vendor.One, Vendor.Two.' -Tone Accent
-            $inputText = Read-WuInput '  Package IDs to add (Enter for another search, 0 to go back)'
+            $inputText = Read-WuInput '  Package IDs to add (Enter for another search, 0 to go back)' -CancelValue '0'
             if ($inputText -eq '0') { return }
             if ($inputText.Length -eq 0) { continue }
             $packageIds = @($inputText -split '[,\s]+' | Select-Object -Unique)
@@ -465,9 +527,9 @@ function Show-WuReview {
     param($Session)
     while ($true) {
         $title = 'Review & apply'
-        if ($script:WuPreviewOnly) { $title = 'Review & simulate' }
+        if ($script:WuPreviewOnly) { $title = 'Review selection' }
         Write-WuHeading $title '03 / Check your choices before running them.'
-        if ($script:WuPreviewOnly) { Write-WuText -Text '[PREVIEW] Simulation only; no Windows changes.' -Tone Warning }
+        if ($script:WuPreviewOnly) { Write-WuText -Text 'Windows actions are unavailable in this session. You can save your selection.' -Tone Warning }
         else { Write-WuText -Text 'Real actions: app installs and the two Explorer settings.' -Tone Accent }
         $plan = @(Get-WuPlan -Session $Session)
         $review = @()
@@ -490,30 +552,19 @@ function Show-WuReview {
                 $retryPlan = @($plan | Where-Object { $retryIds -contains $_.Id })
                 if ($retryPlan.Count -gt 0) { Write-WuOption -Key 'F' -Label 'Retry failed app installs'; $options += 'F' }
             }
-            Write-WuOption -Key 'S' -Label 'Simulate selected changes' -Tone Accent
             Write-WuOption -Key 'R' -Label 'Remove an item'
             Write-WuOption -Key 'C' -Label 'Clear all selections' -Tone Muted
-            $options += @('S', 'R', 'C')
+            $options += @('R', 'C')
         }
         Write-WuFooter
         switch (Read-WuChoice $options) {
             '0' { return }
             'A' { Show-WuApply -Session $Session -Plan $plan }
             'F' { Show-WuApply -Session $Session -Plan $retryPlan }
-            'S' {
-                Write-WuHeading 'Simulation results' 'Preview complete. Your selections remain available.'
-                $results = @(Invoke-WuSimulation -Plan $plan)
-                foreach ($result in $results) {
-                    Write-WuText -Text "[SIMULATED] $($result.Name)" -Tone Success
-                    Write-WuText -Text $result.Message -Indent 6
-                    Write-WuText
-                }
-                Write-WuRule
-                Write-WuText -Text "$($results.Count) simulated; 0 changes made. Your selection is still available." -Tone Accent
-                Write-WuText -Text 'Simulation does not check existing settings, installed apps, or installer availability.' -Tone Muted
-                Wait-WuContinue
-            }
             'R' {
+                Write-WuHeading 'Remove from queue'
+                for ($i = 0; $i -lt $plan.Count; $i++) { Write-WuOption -Key ($i + 1).ToString() -Label $plan[$i].Name }
+                Write-WuFooter -Label 'Cancel'
                 $removeOptions = @('0') + @(1..$plan.Count | ForEach-Object { $_.ToString() })
                 $number = Read-WuChoice -Options $removeOptions -Prompt 'Item number to remove (0 to cancel)'
                 if ($number -ne '0') { Remove-WuSelection -Session $Session -Id $plan[[int]$number - 1].Id }
@@ -543,11 +594,12 @@ function Write-WuResults {
 function Show-WuApply {
     param($Session, [object[]]$Plan)
     if ($script:WuPreviewOnly) { return }
-    Write-WuHeading 'Apply to this laptop' 'Supported actions only; preview-only entries will be skipped.'
+    Write-WuHeading 'Apply to this laptop' 'Unimplemented items will be skipped.'
     Write-WuPlan -Plan $Plan
     $hasApps = @($Plan | Where-Object { $_.Kind -eq 'App' }).Count -gt 0
     Write-WuText -Text 'Explorer values are backed up for undo. App installs are not undone by WinUtility.' -Tone Muted
     if ($hasApps) {
+        Write-WuText -Text 'Apps install as this Windows user with normal permissions, including from an administrator menu.' -Tone Accent
         Write-WuText -Text 'Continuing accepts the selected apps'' license terms and WinGet source agreements. Installers may request administrator access.' -Tone Warning
     }
     if (-not (Confirm-WuChoice 'Apply these supported changes to this Windows user and laptop?' 'Apply now')) { return }
@@ -622,7 +674,7 @@ function Show-WuHistory {
 
 function Read-WuFilePath {
     param([string]$Prompt)
-    $path = Read-WuInput $Prompt
+    $path = Read-WuInput $Prompt -CancelValue '0'
     # Accept paths copied with surrounding quotes, without evaluating their contents.
     if ($path.Length -ge 2 -and (($path.StartsWith('"') -and $path.EndsWith('"')) -or
         ($path.StartsWith("'") -and $path.EndsWith("'")))) {
@@ -727,7 +779,7 @@ function Show-WuRepairAction {
             $sourcePath = Read-WuFilePath '  WIM path, e.g. E:\sources\install.wim (0 to cancel)'
             if ($sourcePath -eq '0' -or $sourcePath.Length -eq 0) { return }
             if ($Action.Id -eq 'dism.source') {
-                $indexText = Read-WuInput '  Matching image index (0 to cancel)'
+                $indexText = Read-WuInput '  Matching image index (0 to cancel)' -CancelValue '0'
                 if ($indexText -eq '0') { return }
                 if (-not [int]::TryParse($indexText, [ref]$sourceIndex) -or $sourceIndex -lt 1) { throw 'Enter a positive image index from the WIM information.' }
             }
@@ -784,7 +836,7 @@ function Show-WuRepairMenu {
         for ($i = 0; $i -lt $actions.Count; $i++) {
             $number = ($i + 1).ToString(); $options += $number
             $description = ''
-            if (-not (Test-WuCompactDisplay)) { $description = $actions[$i].Description }
+            if ($script:WuKeyNavigation -or -not (Test-WuCompactDisplay)) { $description = $actions[$i].Description }
             Write-WuOption -Key $number -Label $actions[$i].Name -Description $description
         }
         if (-not $Advanced) {
@@ -806,7 +858,7 @@ function Show-WuRepairMenu {
                 '8' { Show-WuRepairMenu -Advanced }
                 'L' { Show-WuRepairHistory }
                 'A' {
-                    try { Open-WuRepairAsAdministrator -Plain:$script:WuPlain }
+                    try { Open-WuRepairAsAdministrator -Plain:$script:WuPlain -NoKeyNavigation:(-not $script:WuKeyNavigation) }
                     catch { Write-WuText -Text "Administrator window was not opened: $($_.Exception.Message)" -Tone Warning; Wait-WuContinue }
                 }
                 default { Show-WuRepairAction $actions[[int]$choice - 1] }
@@ -873,8 +925,9 @@ function Show-WuSavedSetups {
 
 function Start-WuTerminal {
     [CmdletBinding()]
-    param([Parameter(Mandatory)]$Session, [Parameter(Mandatory)]$Environment, [switch]$Plain, [switch]$Preview, [switch]$Repair)
-    Initialize-WuAppearance -Plain:$Plain
+    param([Parameter(Mandatory)]$Session, [Parameter(Mandatory)]$Environment, [switch]$Plain, [switch]$Preview, [switch]$Repair, [switch]$NoKeyNavigation)
+    Initialize-WuAppearance -Plain:$Plain -NoKeyNavigation:$NoKeyNavigation
+    $script:WuMenuFocus = @{}
     $script:WuEnvironment = $Environment
     $script:WuAcceptSourceAgreements = $false
     $script:WuPreviewOnly = $Preview -or -not $Environment.SupportedOS
@@ -885,19 +938,19 @@ function Start-WuTerminal {
         $subtitle = 'A fresh start. A setup that feels like yours.'
         if ($compact) { $subtitle = '' }
         Write-WuHeading 'WINUTILITY / LAPTOP SETUP' $subtitle
-        if ($script:WuPreviewOnly) { Write-WuText -Text '[PREVIEW MODE] All actions are simulated.' -Tone Warning }
+        if ($script:WuPreviewOnly) { Write-WuText -Text 'Windows actions unavailable | Browse and save your setup' -Tone Warning }
         else { Write-WuText -Text '[WINDOWS MODE] Review and confirm before applying.' -Tone Accent }
         if (-not $compact) { Write-WuText }
-        $wingetStatus = 'not available (simulation still works)'
+        $wingetStatus = 'not available (app installs disabled)'
         if ($Environment.WinGetAvailable) { $wingetStatus = 'available' }
         Write-WuText -Text "$($Environment.OS) | PowerShell $($Environment.PowerShellVersion)" -Tone Muted
         Write-WuText -Text "WinGet: $wingetStatus" -Tone Muted
         if (-not $Environment.SupportedOS) {
-            Write-WuText -Text 'Target: Windows 11. You can explore this prototype on this host.' -Tone Muted
+            Write-WuText -Text 'Target: Windows 11. You can browse and save setups on this host.' -Tone Muted
         }
         $plan = @(Get-WuPlan -Session $Session)
         $reviewLabel = "Review & apply ($($plan.Count))"
-        if ($script:WuPreviewOnly) { $reviewLabel = "Review & simulate ($($plan.Count))" }
+        if ($script:WuPreviewOnly) { $reviewLabel = "Review selection ($($plan.Count))" }
         if (-not $compact) { Write-WuText }
         Write-WuSelectionSummary -Plan $plan
         $saveStatus = 'No unsaved changes'
@@ -909,14 +962,14 @@ function Start-WuTerminal {
             @('1', 'Presets', 'Minimal, Balanced or Full. Start with a complete setup.'),
             @('2', 'Manual changes', 'Privacy, Explorer, power and Windows features.'),
             @('3', 'App installs', 'Browse the catalog or find an app by name.'),
-            @('4', $reviewLabel, 'Inspect your choices, simulate or apply supported actions.'),
+            @('4', $reviewLabel, 'Review your choices and apply supported actions.'),
             @('5', 'Saved setups', 'Save this setup or bring one from another laptop.'),
             @('6', 'Repair Windows', 'Full repair, DISM, SFC, disk checks and recovery tools.')
         )
         foreach ($item in $menu) {
             $description = ''
             $tone = 'Title'
-            if (-not $compact) { $description = $item[2] }
+            if ($script:WuKeyNavigation -or -not $compact) { $description = $item[2] }
             if ($item[0] -eq '4') { $tone = 'Accent' }
             Write-WuOption -Key $item[0] -Label $item[1] -Description $description -Tone $tone
             if (-not $compact -and $item[0] -ne '6') { Write-WuText }
@@ -940,7 +993,7 @@ function Start-WuTerminal {
                     Write-WuOption -Key '1' -Label 'Save and exit' -Tone Accent
                     Write-WuOption -Key '2' -Label 'Discard and exit'
                     Write-WuFooter -Label 'Cancel'
-                    $exitChoice = Read-WuChoice @('1', '2', '0')
+                    $exitChoice = Read-WuChoice @('1', '2', '0') -DefaultKey '0'
                     if ($exitChoice -eq '0') { continue }
                     if ($exitChoice -eq '1' -and -not (Save-WuInteractive -Session $Session)) { continue }
                 }

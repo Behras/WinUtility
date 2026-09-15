@@ -32,7 +32,7 @@ function Invoke-BootstrapScenario {
             $project = Join-Path $archiveRoot 'project with spaces'
             [void][IO.Directory]::CreateDirectory((Join-Path $project 'src'))
             [void][IO.Directory]::CreateDirectory((Join-Path $project 'data'))
-            foreach ($file in @('src/WinUtility.Core.psm1', 'src/WinUtility.Terminal.psm1', 'src/WinUtility.Windows.psm1', 'src/WinUtility.Repair.psm1', 'data/settings.json', 'data/apps.json', 'data/presets.json')) {
+            foreach ($file in @('src/WinUtility.Core.psm1', 'src/WinUtility.Terminal.psm1', 'src/WinUtility.Windows.psm1', 'src/WinUtility.AppWorker.ps1', 'src/WinUtility.Repair.psm1', 'src/WinUtility.Input.psm1', 'data/settings.json', 'data/apps.json', 'data/presets.json')) {
                 [IO.File]::WriteAllText((Join-Path $project $file), '')
             }
             if ($context.Mode -ne 'incomplete') {

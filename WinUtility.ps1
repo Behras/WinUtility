@@ -1,6 +1,6 @@
 #requires -Version 5.1
 [CmdletBinding()]
-param([switch]$Plain, [switch]$Preview, [switch]$Repair)
+param([switch]$Plain, [switch]$Preview, [switch]$Repair, [switch]$NoKeyNavigation)
 
 & {
     $ErrorActionPreference = 'Stop'
@@ -10,7 +10,7 @@ param([switch]$Plain, [switch]$Preview, [switch]$Repair)
         Import-Module (Join-Path $PSScriptRoot 'src/WinUtility.Terminal.psm1') -Force -Scope Local
         $catalog = Get-WuCatalog -DataPath (Join-Path $PSScriptRoot 'data')
         $session = New-WuSession -Catalog $catalog
-        Start-WuTerminal -Session $session -Environment (Get-WuEnvironment) -Plain:$Plain -Preview:$Preview -Repair:$Repair
+        Start-WuTerminal -Session $session -Environment (Get-WuEnvironment) -Plain:$Plain -Preview:$Preview -Repair:$Repair -NoKeyNavigation:$NoKeyNavigation
     }
     catch {
         Write-Host ''

@@ -1,0 +1,25 @@
+name: Bug report
+description: Report unexpected WinUtility behavior.
+title: "[Bug] "
+body:
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Windows version/build, PowerShell version, terminal, and GitHub or local launch.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include the menu path and what you expected to happen.
+    validations:
+      required: true
+  - type: textarea
+    id: error
+    attributes:
+      label: Actual result and error output
+      description: Paste the exact error or command output. Remove private paths or usernames before sharing.
+    validations:
+      required: true

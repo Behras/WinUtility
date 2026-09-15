@@ -20,12 +20,51 @@ function Invoke-WindowsFixture {
                 }
                 Writes = New-Object System.Collections.ArrayList
                 WingetCalls = New-Object System.Collections.ArrayList
+                NativeContexts = New-Object System.Collections.ArrayList
+                WorkerCalls = New-Object System.Collections.ArrayList
                 Installed = @{}; QueryExit = @{}; InstallExit = @{}
+                SessionId = 7; WorkerSessionId = 7; WorkerUserSid = 'S-1-5-21-fixture'; WorkerIsAdmin = $false
+                WorkerWinGetAvailable = $true; WorkerStartFailures = @{}; WorkerResponseEdit = $null; WorkerCleanup = 0
                 FailRead = $false; FailWriteAfter = $false; SaveCount = 0; FailSaveAt = 0
             }
             $script:OriginalSave = ${function:Save-WuJournal}
             function script:Get-WuReadiness { return $script:Fake.Environment }
+            function script:Get-WuWindowsIdentity { return $script:Fake.Environment }
+            function script:Get-WuProcessSessionId { return $script:Fake.SessionId }
             function script:Get-WuHistoryDirectory { return $script:Fake.Directory }
+            function script:Start-WuUserInstallTask {
+                param($RequestPath, $UserSid, $TaskName)
+                $request = Get-Content -LiteralPath $RequestPath -Raw | ConvertFrom-Json
+                [void]$script:Fake.WorkerCalls.Add($request)
+                # The parent must persist its Pending record before handing off any install.
+                $pending = @(Get-ChildItem -LiteralPath $script:Fake.Directory -Filter '*.json' | ForEach-Object {
+                    (Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json).Actions | Where-Object { $_.PackageId -eq $request.PackageId -and $_.Status -eq 'Pending' }
+                })
+                if ($pending.Count -eq 0) { throw 'No durable app intent before starting worker.' }
+                if ($script:Fake.WorkerStartFailures.ContainsKey($request.PackageId)) { throw 'Task Scheduler unavailable (fixture).' }
+                $previous = $script:Fake.Environment
+                $previousSessionId = $script:Fake.SessionId
+                try {
+                    $script:Fake.Environment = $previous.PSObject.Copy()
+                    $script:Fake.Environment.IsAdmin = $script:Fake.WorkerIsAdmin
+                    $script:Fake.Environment.UserSid = $script:Fake.WorkerUserSid
+                    $script:Fake.Environment.WinGetAvailable = $script:Fake.WorkerWinGetAvailable
+                    $script:Fake.SessionId = $script:Fake.WorkerSessionId
+                    Invoke-WuAppInstallWorker -RequestPath $RequestPath
+                    if ($null -ne $script:Fake.WorkerResponseEdit) {
+                        $path = Join-Path (Split-Path -Parent $RequestPath) 'result.json'
+                        $response = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+                        & $script:Fake.WorkerResponseEdit $response
+                        Save-WuJournal $response $path
+                    }
+                }
+                finally { $script:Fake.Environment = $previous; $script:Fake.SessionId = $previousSessionId }
+                return [pscustomobject]@{ Name = $TaskName }
+            }
+            function script:Remove-WuUserInstallTask {
+                param($Context, [switch]$Completed)
+                if ($null -ne $Context) { $script:Fake.WorkerCleanup++ }
+            }
             function script:Read-WuExplorerValue {
                 param($Id)
                 if ($script:Fake.FailRead) { throw 'Registry read denied (fixture).' }
@@ -51,8 +90,9 @@ function Invoke-WindowsFixture {
                 & $script:OriginalSave $Journal $Path
             }
             function script:Invoke-WuWinget {
-                param($FilePath, $Arguments, [switch]$Visible)
+                param($FilePath, $Arguments, [switch]$Visible, $OutputPath)
                 [void]$script:Fake.WingetCalls.Add(@($Arguments))
+                [void]$script:Fake.NativeContexts.Add([pscustomobject]@{ IsAdmin = $script:Fake.Environment.IsAdmin; UserSid = $script:Fake.Environment.UserSid })
                 $id = $Arguments[2]
                 $code = 0
                 if ($Arguments[0] -eq 'list') {
@@ -68,9 +108,11 @@ function Invoke-WindowsFixture {
                     if ($script:Fake.QueryExit.ContainsKey($key)) { $code = $script:Fake.QueryExit[$key] }
                 }
                 else { throw 'Unexpected native operation in test.' }
-                return [pscustomobject]@{ ExitCode = $code; Output = "Fixture WinGet $($Arguments[0]): $id" }
+                $output = "Fixture WinGet $($Arguments[0]): $id"
+                if ($OutputPath) { [IO.File]::AppendAllText($OutputPath, $output + "`n") }
+                return [pscustomobject]@{ ExitCode = $code; Output = $output }
             }
-            & $Action $script:Fake
+            & $Action $script:Fake $ExecutionContext.SessionState.Module
         } $Body $directory $script:Catalog
     }
     finally { Remove-Module -ModuleInfo $module -Force }
@@ -228,7 +270,7 @@ Test-Case 'Unimplemented settings are skipped and registry read failures block w
         Set-WuSelection $session 'explorer.extensions'
         $fake.FailRead = $true
         $review = @(Get-WuExecutionReview -Plan @(Get-WuPlan $session) -Environment $fake.Environment)
-        Assert-Equal @('PreviewOnly', 'Blocked') @($review.Status)
+        Assert-Equal @('NotImplemented', 'Blocked') @($review.Status)
         $run = Invoke-WuApply -Plan @(Get-WuPlan $session)
         Assert-Equal @('Skipped', 'Failed') @($run.Actions.Status)
         Assert-Equal 0 $fake.Writes.Count
@@ -271,6 +313,142 @@ Test-Case 'An unknown installed state does not trigger an install and missing Wi
         $fake.Environment.WinGetAvailable = $false
         $run = Invoke-WuApply -Plan @(Get-WuPlan $session) -AcceptAppAgreements
         Assert-Equal @('Applied', 'Skipped') @($run.Actions.Status)
+    }
+}
+
+Test-Case 'An elevated app queue installs Spotify and discovered apps as the same normal user, with real history and cleanup' {
+    Invoke-WindowsFixture {
+        param($fake)
+        $fake.Environment.IsAdmin = $true
+        $session = New-WuSession $fake.Catalog
+        Set-WuSelection $session 'app.spotify'
+        Add-WuWinGetSelection $session @('Vendor.Other')
+        $review = @(Get-WuExecutionReview -Plan @(Get-WuPlan $session) -Environment $fake.Environment)
+        Assert-Equal @('Ready', 'Ready') @($review.Status)
+        Assert-Equal @('Checked during apply', 'Checked during apply') @($review.Current)
+        Assert-Equal 0 $fake.WingetCalls.Count 'Elevated review must not query the wrong installation context.'
+        $run = Invoke-WuApply -Plan @(Get-WuPlan $session) -AcceptAppAgreements
+        Assert-Equal @('Installed', 'Installed') @($run.Actions.Status)
+        Assert-Equal @('Spotify.Spotify', 'Vendor.Other') @($fake.WorkerCalls.PackageId)
+        Assert-Equal 2 $fake.WorkerCleanup
+        Assert-Equal 0 @($fake.NativeContexts | Where-Object { $_.IsAdmin -or $_.UserSid -ne $fake.Environment.UserSid }).Count
+        Assert-Equal 4 $fake.WingetCalls.Count
+        Assert-Equal 0 @(Get-ChildItem -LiteralPath $fake.Directory -Directory).Count
+        $saved = Get-Content -LiteralPath $run.Path -Raw | ConvertFrom-Json
+        Assert-Equal @('Installed', 'Installed') @($saved.Actions.Status)
+        Assert-Equal @(0, 0) @($saved.Actions.ExitCode)
+        Assert-True ($saved.Actions[0].Output.Contains('install: Spotify.Spotify'))
+    }
+}
+
+Test-Case 'Normal-user app installs do not create scheduled tasks and reject admin execution at the native boundary' {
+    Invoke-WindowsFixture {
+        param($fake, $module)
+        $session = New-WuSession $fake.Catalog
+        Set-WuSelection $session 'app.spotify'
+        Assert-Equal 'Installed' (Invoke-WuApply -Plan @(Get-WuPlan $session) -AcceptAppAgreements).Actions[0].Status
+        Assert-Equal 0 $fake.WorkerCalls.Count
+        $fake.Environment.IsAdmin = $true
+        Assert-Throws { & $module { Invoke-WuUserAppInstall -PackageId 'Spotify.Spotify' -Environment $script:Fake.Environment } } '*normal PowerShell*'
+        Assert-Equal 2 $fake.WingetCalls.Count
+    }
+}
+
+Test-Case 'Elevated app installs preserve existing apps, unknown state, failure, cancellation and restart outcomes' {
+    foreach ($spec in @(
+        @('existing', 0, 'AlreadyInstalled'), @('query', 87, 'Failed'),
+        @('install', -1978335215, 'Failed'), @('install', -1978334964, 'Cancelled'),
+        @('install', 3010, 'RestartRequired')
+    )) {
+        Invoke-WindowsFixture {
+            param($fake)
+            $fake.Environment.IsAdmin = $true
+            $session = New-WuSession $fake.Catalog
+            Set-WuSelection $session 'app.spotify'
+            if ($spec[0] -eq 'existing') { $fake.Installed['Spotify.Spotify'] = $true }
+            elseif ($spec[0] -eq 'query') { $fake.QueryExit['Spotify.Spotify'] = $spec[1] }
+            else { $fake.InstallExit['Spotify.Spotify'] = $spec[1] }
+            $run = Invoke-WuApply -Plan @(Get-WuPlan $session) -AcceptAppAgreements
+            Assert-Equal $spec[2] $run.Actions[0].Status
+            Assert-Equal $spec[1] $run.Actions[0].ExitCode
+            Assert-True ($run.Actions[0].Output.Contains('Spotify.Spotify'))
+            Assert-Equal ($spec[2] -eq 'RestartRequired') $run.Actions[0].RestartRequired
+            Assert-Equal 1 $fake.WorkerCleanup
+            if ($spec[0] -ne 'install') { Assert-Equal 0 @($fake.WingetCalls | Where-Object { $_[0] -eq 'install' }).Count }
+        }
+    }
+}
+
+Test-Case 'An unavailable user worker fails that app without running it elevated, then continues the selected queue' {
+    Invoke-WindowsFixture {
+        param($fake)
+        $fake.Environment.IsAdmin = $true
+        $fake.WorkerStartFailures['Spotify.Spotify'] = $true
+        $session = New-WuSession $fake.Catalog
+        Set-WuSelection $session 'explorer.extensions'
+        Set-WuSelection $session 'app.spotify'
+        Add-WuWinGetSelection $session @('Vendor.Other')
+        $run = Invoke-WuApply -Plan @(Get-WuPlan $session) -AcceptAppAgreements
+        Assert-Equal @('Applied', 'Failed', 'Installed') @($run.Actions.Status)
+        Assert-True ($run.Actions[1].Message.Contains('without Run as administrator'))
+        Assert-Equal $null $run.Actions[1].Changed
+        Assert-Equal 0 @($fake.WingetCalls | Where-Object { $_[2] -eq 'Spotify.Spotify' }).Count
+        Assert-Equal 0 @($fake.NativeContexts | Where-Object { $_.IsAdmin }).Count
+        Assert-Equal 0 @(Get-ChildItem -LiteralPath $fake.Directory -Directory).Count
+    }
+}
+
+Test-Case 'The worker refuses another user, another session, or an elevated token before touching WinGet' {
+    foreach ($mode in @('user', 'session', 'admin')) {
+        Invoke-WindowsFixture {
+            param($fake)
+            $fake.Environment.IsAdmin = $true
+            if ($mode -eq 'user') { $fake.WorkerUserSid = 'S-1-5-21-other' }
+            elseif ($mode -eq 'session') { $fake.WorkerSessionId = 42 }
+            else { $fake.WorkerIsAdmin = $true }
+            $session = New-WuSession $fake.Catalog
+            Set-WuSelection $session 'app.spotify'
+            $run = Invoke-WuApply -Plan @(Get-WuPlan $session) -AcceptAppAgreements
+            Assert-Equal 'Failed' $run.Actions[0].Status
+            Assert-Equal 0 $fake.WingetCalls.Count
+            Assert-Equal 1 $fake.WorkerCleanup
+            Assert-Equal 0 @(Get-ChildItem -LiteralPath $fake.Directory -Directory).Count
+        }
+    }
+}
+
+Test-Case 'Missing WinGet in the normal-user session does not fall back to elevated installs' {
+    Invoke-WindowsFixture {
+        param($fake)
+        $fake.Environment.IsAdmin = $true
+        $fake.WorkerWinGetAvailable = $false
+        $session = New-WuSession $fake.Catalog
+        Set-WuSelection $session 'app.spotify'
+        $run = Invoke-WuApply -Plan @(Get-WuPlan $session) -AcceptAppAgreements
+        Assert-Equal 'Failed' $run.Actions[0].Status
+        Assert-True ($run.Actions[0].Message.Contains('WinGet available for this user'))
+        Assert-Equal 0 $fake.WingetCalls.Count
+    }
+}
+
+Test-Case 'Malformed worker results never count as successful installs and partial output is retained' {
+    foreach ($edit in @(
+        { param($r) $r.RequestId = 'mismatch' }, { param($r) $r.IsAdmin = $true },
+        { param($r) $r.UserSid = 'other' }, { param($r) $r.SessionId = 99 },
+        { param($r) $r.Result.ExitCode = $null }, { param($r) $r.Result.ExitCode = '0' }
+    )) {
+        Invoke-WindowsFixture {
+            param($fake)
+            $fake.Environment.IsAdmin = $true
+            $fake.WorkerResponseEdit = $edit
+            $session = New-WuSession $fake.Catalog
+            Set-WuSelection $session 'app.spotify'
+            $run = Invoke-WuApply -Plan @(Get-WuPlan $session) -AcceptAppAgreements
+            Assert-Equal 'Failed' $run.Actions[0].Status
+            Assert-Equal $null $run.Actions[0].Changed
+            Assert-True ($run.Actions[0].Output.Contains('install: Spotify.Spotify'))
+            Assert-Equal 1 $fake.WorkerCleanup
+        }
     }
 }
 
@@ -378,15 +556,19 @@ Test-Case 'Readiness distinguishes Windows clients from servers and retains unkn
 Test-Case 'Native adapter preserves stderr and nonzero exit codes with executable and script arguments' {
     $module = Import-Module (Join-Path $script:RepoRoot 'src/WinUtility.Windows.psm1') -Force -PassThru
     $fixture = Join-Path $script:TestRoot 'native process fixture.ps1'
+    $logPath = Join-Path $script:TestRoot 'native worker output.log'
     [IO.File]::WriteAllText($fixture, '[Console]::Error.WriteLine("expected-native-stderr"); Write-Output "expected-native-stdout"; exit 7')
     $executableName = 'pwsh'
     if ($PSVersionTable.PSEdition -eq 'Desktop') { $executableName = 'powershell.exe' }
     elseif ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) { $executableName = 'pwsh.exe' }
     try {
-        $result = & $module { param($Executable, $Script) Invoke-WuWinget -FilePath $Executable -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $Script) } (Join-Path $PSHOME $executableName) $fixture
+        $result = & $module { param($Executable, $Script, $Log) Invoke-WuWinget -FilePath $Executable -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $Script) -OutputPath $Log } (Join-Path $PSHOME $executableName) $fixture $logPath
         Assert-Equal 7 $result.ExitCode
         Assert-True ($result.Output.Contains('expected-native-stderr'))
         Assert-True ($result.Output.Contains('expected-native-stdout'))
+        $logged = [IO.File]::ReadAllText($logPath)
+        Assert-True ($logged.Contains('expected-native-stderr'))
+        Assert-True ($logged.Contains('expected-native-stdout'))
     }
     finally { Remove-Module -ModuleInfo $module -Force }
 }

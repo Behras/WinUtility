@@ -1,12 +1,12 @@
 function Invoke-TerminalScenario {
-    param([string[]]$Answers, $Session, [int]$Width = 78, [int]$Height = 50, [switch]$Plain, [switch]$LiveFixture, [switch]$AdminFixture, [switch]$RepairOnly,
+    param([string[]]$Answers, $Session, [int]$Width = 78, [int]$Height = 50, [switch]$Plain, [switch]$LiveFixture, [switch]$AdminFixture, [switch]$RepairOnly, [switch]$KeyFixture, [switch]$KeyFailure,
         [ValidateSet('ready', 'agreement', 'missing', 'failed', 'empty')][string]$WinGetScenario = 'missing',
         [ValidateSet('ready', 'disk3', 'disk-fix3', 'dism87', 'quick', 'empty-log', 'missing-log', 'launch-failed', 'probe-failed', 'broken-report')][string]$RepairScenario = 'ready')
     if ($null -eq $Session) { $Session = New-WuSession -Catalog $script:Catalog }
     $module = Import-Module (Join-Path $script:RepoRoot 'src/WinUtility.Terminal.psm1') -Force -PassThru
     try {
         return (& $module {
-            param($Inputs, $ActiveSession, $DisplayWidth, $DisplayHeight, $PlainMode, $LiveMode, $AdminMode, $RepairMode, $PackageScenario, $RepairCase, $TestDirectory)
+            param($Inputs, $ActiveSession, $DisplayWidth, $DisplayHeight, $PlainMode, $LiveMode, $AdminMode, $RepairMode, $PackageScenario, $RepairCase, $TestDirectory, $KeyboardMode, $FailKeys)
             $script:WuWidthOverride = $DisplayWidth
             $script:WuHeightOverride = $DisplayHeight
             $script:Answers = New-Object System.Collections.Queue
@@ -22,6 +22,22 @@ function Invoke-TerminalScenario {
                 param($Object, $ForegroundColor, $BackgroundColor, [switch]$NoNewline, $Separator = ' ')
                 $script:OutputLines.Add([string]($Object -join $Separator))
                 if ($PSBoundParameters.ContainsKey('ForegroundColor')) { $script:ColorCalls++ }
+            }
+            $script:UiKeyMenus = New-Object Collections.ArrayList
+            $script:UiKeyFailure = $FailKeys
+            if ($KeyboardMode) {
+                function script:Test-WuKeyInput { return $true }
+                function script:Clear-WuKeyScreen { }
+                function script:Read-WuKeyChoice {
+                    param([object[]]$Items = @(), $DefaultKey, $Prompt, $CancelValue = '0', [switch]$AllowText, $ToggleKeys, [switch]$PageNavigation, [switch]$Plain)
+                    [void]$script:UiKeyMenus.Add([pscustomobject]@{ Keys = @($Items | ForEach-Object { $_.Key }); Default = $DefaultKey; Toggles = $ToggleKeys })
+                    if ($script:UiKeyFailure) { throw 'Console input unavailable (fixture).' }
+                    if ($script:Answers.Count -eq 0) { throw "Test input exhausted at: $Prompt" }
+                    $value = $script:Answers.Dequeue()
+                    if ($value -eq '<Enter>') { $value = $DefaultKey; if ([string]::IsNullOrEmpty($value) -and $Items.Count -gt 0) { $value = $Items[0].Key } }
+                    if ($value -eq '<Escape>') { $value = $CancelValue }
+                    return [pscustomobject]@{ Value = $value; FocusKey = $value }
+                }
             }
             $script:UiApplyCalls = New-Object System.Collections.ArrayList
             $script:UiUndoCalls = 0
@@ -157,10 +173,10 @@ function Invoke-TerminalScenario {
                     return [pscustomobject]@{ Name = 'Show file extensions'; Status = 'Restored'; Message = 'Fixture restoration'; RestartRequired = $false }
                 }
             }
-            Start-WuTerminal -Session $ActiveSession -Environment $environment -Plain:$PlainMode -Preview:(-not $LiveMode) -Repair:$RepairMode
+            Start-WuTerminal -Session $ActiveSession -Environment $environment -Plain:$PlainMode -Preview:(-not $LiveMode) -Repair:$RepairMode -NoKeyNavigation:(-not $KeyboardMode)
             if ($script:Answers.Count -ne 0) { throw "Unused test inputs: $($script:Answers.Count)" }
-            return [pscustomobject]@{ Text = $script:OutputLines -join "`n"; Session = $ActiveSession; ColorCalls = $script:ColorCalls; ApplyCalls = $script:UiApplyCalls; UndoCalls = $script:UiUndoCalls; RepairCalls = $script:UiRepairCalls; ElevationCalls = $script:UiElevationCalls; SearchCalls = $script:UiSearchCalls; DetailCalls = $script:UiDetailCalls }
-        } $Answers $Session $Width $Height $Plain $LiveFixture $AdminFixture $RepairOnly $WinGetScenario $RepairScenario $script:TestRoot)
+            return [pscustomobject]@{ Text = $script:OutputLines -join "`n"; Session = $ActiveSession; ColorCalls = $script:ColorCalls; ApplyCalls = $script:UiApplyCalls; UndoCalls = $script:UiUndoCalls; RepairCalls = $script:UiRepairCalls; ElevationCalls = $script:UiElevationCalls; SearchCalls = $script:UiSearchCalls; DetailCalls = $script:UiDetailCalls; KeyMenus = @($script:UiKeyMenus) }
+        } $Answers $Session $Width $Height $Plain $LiveFixture $AdminFixture $RepairOnly $WinGetScenario $RepairScenario $script:TestRoot $KeyFixture $KeyFailure)
     }
     finally { Remove-Module -ModuleInfo $module -Force }
 }
@@ -169,7 +185,7 @@ Test-Case 'Menus tolerate invalid input, empty review, back navigation, and miss
     $result = Invoke-TerminalScenario -Answers @('oops', '', '4', '0', '1', '0', '2', '0', '3', '0', '5', '0', '0')
     Assert-True ($result.Text.Contains('Enter one of:'))
     Assert-True ($result.Text.Contains('Nothing selected.'))
-    Assert-True ($result.Text.Contains('not available (simulation still works)'))
+    Assert-True ($result.Text.Contains('not available (app installs disabled)'))
     Assert-True (-not $result.Text.Contains('Unsaved selections'))
     Assert-Equal 0 $result.Session.Selected.Count
 }
@@ -182,18 +198,18 @@ Test-Case 'Preset preview cancellation preserves selections' {
     Assert-Equal @('power.balanced') @($result.Session.Selected.Keys)
 }
 
-Test-Case 'Preset, manual toggle, app search, simulation, and cancelled exit form one flow' {
+Test-Case 'Preset, manual toggle, app search, review, and cancelled exit form one flow' {
     $answers = @(
         '1', '1', '1',                # Minimal, confirm.
         '2', '2', '1', '1', '0', '0', # Toggle extensions off, then back on.
         '3', 's', 'fireFOX', '1', '0', '0',
-        '4', 's', '', 'r', '4', '0', # Simulate four actions, then remove item four.
+        '4', 'r', '4', '0',         # Review four actions, then remove item four.
         '0', '0',                   # Cancel exit.
         '0', '2'                    # Discard and exit.
     )
     $result = Invoke-TerminalScenario -Answers $answers
     Assert-True ($result.Text.Contains('Selected: 2 settings, 2 apps'))
-    Assert-True ($result.Text.Contains('4 simulated; 0 changes made.'))
+    Assert-True (-not $result.Text.Contains('Simulate'))
     Assert-True ($result.Text.Contains('From: Manual'))
     Assert-True ($result.Text.Contains('From: Preset: Minimal'))
     Assert-Equal 3 $result.Session.Selected.Count
@@ -335,11 +351,46 @@ Test-Case 'An invalid import reports the problem and preserves an existing selec
 }
 
 Test-Case 'Plain mode preserves navigation without colors or Unicode decorations' {
-    $result = Invoke-TerminalScenario -Answers @('1', '1', '1', '4', 's', '', '0', '0', '2') -Plain
+    $result = Invoke-TerminalScenario -Answers @('1', '1', '1', '4', '0', '0', '2') -Plain
     Assert-Equal 0 $result.ColorCalls
     Assert-True (-not ($result.Text -match '[^\x00-\x7f]'))
-    Assert-True ($result.Text.Contains('[SIMULATED]'))
+    Assert-True ($result.Text.Contains('Review selection'))
     Assert-Equal 3 $result.Session.Selected.Count
+}
+
+Test-Case 'Windows review offers real actions without a simulation option' {
+    $session = New-WuSession -Catalog $script:Catalog
+    Set-WuSelection -Session $session -Id 'app.firefox'
+    $result = Invoke-TerminalScenario -Session $session -LiveFixture -Answers @('4', '0', '0', '2')
+    Assert-True ($result.Text.Contains('Apply supported changes'))
+    Assert-True ($result.Text -notmatch '(?i)simulat')
+    Assert-Equal 0 $result.ApplyCalls.Count
+}
+
+Test-Case 'Keyboard menus preserve displayed order and checkbox selection across categories' {
+    $result = Invoke-TerminalScenario -KeyFixture -Answers @('3', '1', '1', '<Escape>', '2', '1', '<Escape>', '<Escape>', '<Escape>', '2')
+    Assert-Equal 2 $result.Session.Selected.Count
+    Assert-Equal @('1', '2', '3', '4', '5', '6', 'I', '0') $result.KeyMenus[0].Keys
+    Assert-True (@($result.KeyMenus | Where-Object { @($_.Toggles).Count -gt 0 }).Count -gt 0)
+    Assert-Equal 0 $result.ApplyCalls.Count
+}
+
+Test-Case 'Keyboard confirmation and unsaved exit default to Cancel' {
+    $result = Invoke-TerminalScenario -KeyFixture -LiveFixture -AdminFixture -Answers @('6', '1', '<Enter>', '<Escape>', '<Escape>')
+    Assert-Equal 0 $result.RepairCalls.Count
+    Assert-Equal '0' $result.KeyMenus[2].Default
+    $session = New-WuSession -Catalog $script:Catalog
+    Set-WuSelection -Session $session -Id 'app.firefox'
+    $result = Invoke-TerminalScenario -KeyFixture -Session $session -Answers @('<Escape>', '<Enter>', '<Escape>', '2')
+    Assert-Equal '0' $result.KeyMenus[1].Default
+}
+
+Test-Case 'Unavailable key input restores numbered options and preserves navigation' {
+    $result = Invoke-TerminalScenario -KeyFixture -KeyFailure -Answers @('3', '0', '0')
+    Assert-True ($result.Text.Contains('Key navigation is unavailable.'))
+    Assert-True ($result.Text.Contains('[3]  App installs'))
+    Assert-Equal 1 $result.KeyMenus.Count
+    Assert-Equal 0 $result.ApplyCalls.Count
 }
 
 Test-Case 'Narrow terminal output wraps without losing selections or overflowing lines' {
@@ -355,7 +406,7 @@ Test-Case 'Compact home screen keeps every action visible in a 24-row terminal' 
     $result = Invoke-TerminalScenario -Answers @('0') -Height 24 -Plain
     $homeScreen = $result.Text.Substring(0, $result.Text.IndexOf('Goodbye.'))
     Assert-True (@($homeScreen -split "`n").Count -le 24)
-    foreach ($label in @('Presets', 'Manual changes', 'App installs', 'Review & simulate', 'Saved setups', 'Repair Windows', 'Exit')) {
+    foreach ($label in @('Presets', 'Manual changes', 'App installs', 'Review selection', 'Saved setups', 'Repair Windows', 'Exit')) {
         Assert-True ($homeScreen.Contains($label))
     }
 }
